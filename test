@@ -2134,6 +2134,7 @@ local Win = Library:CreateWindow({
 	Launcher = { Enabled = true },
 })
 
+print(Win._launcherAllowed, Win.LauncherRoot, Win.LauncherRoot and Win.LauncherRoot.Visible)
 Win:AddTab({ Name = "Aim",      Icon = "aim",      Group = "Модули" })
 local Visuals = Win:AddTab({ Name = "Visuals",  Icon = "eye",      Group = "Модули" })
 Win:AddTab({ Name = "Movement", Icon = "activity", Group = "Модули" })
