@@ -100,9 +100,6 @@ local L = isMobile and {
 
 --============================== УТИЛИТЫ ===============================
 
--- Список объектов, участвующих в затухании панели при открытии/закрытии.
-local FadeList = {}
-
 local function New(class, props, children)
 	local inst = Instance.new(class)
 	local parent
@@ -115,9 +112,6 @@ local function New(class, props, children)
 		for _, c in ipairs(children) do c.Parent = inst end
 	end
 	if parent then inst.Parent = parent end
-	if inst:IsA("GuiObject") or inst:IsA("UIStroke") then
-		table.insert(FadeList, inst)
-	end
 	return inst
 end
 
@@ -456,6 +450,36 @@ end
 
 -------------------------------- DROPDOWN ------------------------------
 -- Список рисуется в отдельном ScreenGui, чтобы карточка его не обрезала.
+-- Одновременно открыт может быть только один список, поэтому соединение
+-- «клик мимо» одно на всю библиотеку: создаётся при открытии, рвётся,
+-- когда открытых списков не осталось.
+local Dropdowns = { current = nil, conn = nil }
+
+local function DropdownRelease()
+	if Dropdowns.conn then
+		Dropdowns.conn:Disconnect()
+		Dropdowns.conn = nil
+	end
+	Dropdowns.current = nil
+end
+
+local function CloseActiveDropdown()
+	local cur = Dropdowns.current
+	if not cur then return end
+	DropdownRelease()
+	cur.close()
+end
+
+local function DropdownOpened(entry)
+	CloseActiveDropdown()
+	Dropdowns.current = entry
+	Dropdowns.conn = UserInputService.InputBegan:Connect(function(i)
+		if i.UserInputType ~= Enum.UserInputType.MouseButton1
+		and i.UserInputType ~= Enum.UserInputType.Touch then return end
+		local e = Dropdowns.current
+		if e and not e.hit(i.Position) then CloseActiveDropdown() end
+	end)
+end
 local function MakeDropdown(win, row, opts)
 	local ctl = {}
 	local options = opts.Options or {}
@@ -525,11 +549,24 @@ local function MakeDropdown(win, row, opts)
 		end
 	end
 
+	local entry
 	local function closeList()
 		if not open then return end
 		open = false
 		list.Visible = false
+		if Dropdowns.current == entry then DropdownRelease() end
 	end
+
+	-- попадание курсора/пальца в список или в само поле
+	local function hitTest(m)
+		local p, sz = list.AbsolutePosition, list.AbsoluteSize
+		if m.X >= p.X and m.X <= p.X + sz.X and m.Y >= p.Y and m.Y <= p.Y + sz.Y then
+			return true
+		end
+		local bp, bs = box.AbsolutePosition, box.AbsoluteSize
+		return m.X >= bp.X and m.X <= bp.X + bs.X and m.Y >= bp.Y and m.Y <= bp.Y + bs.Y
+	end
+	entry = { close = closeList, hit = hitTest }
 
 	local function openList()
 		open = true
@@ -544,6 +581,7 @@ local function MakeDropdown(win, row, opts)
 		list.Size = UDim2.fromOffset(math.max(size.X, 110), h)
 		list.Visible = true
 		refreshMarks()
+		DropdownOpened(entry)
 	end
 
 	for _, name in ipairs(options) do
@@ -603,20 +641,6 @@ local function MakeDropdown(win, row, opts)
 		if open then closeList() else openList() end
 	end)
 
-	-- клик мимо списка закрывает его
-	Connect(UserInputService.InputBegan, function(i)
-		if not open then return end
-		if i.UserInputType ~= Enum.UserInputType.MouseButton1
-		and i.UserInputType ~= Enum.UserInputType.Touch then return end
-		local p, s = list.AbsolutePosition, list.AbsoluteSize
-		local m = i.Position
-		local insideList = m.X >= p.X and m.X <= p.X + s.X and m.Y >= p.Y and m.Y <= p.Y + s.Y
-		local bp, bs = box.AbsolutePosition, box.AbsoluteSize
-		local insideBox = m.X >= bp.X and m.X <= bp.X + bs.X and m.Y >= bp.Y and m.Y <= bp.Y + bs.Y
-		if not insideList and not insideBox then closeList() end
-	end)
-
-	table.insert(win._popups, closeList)
 	Library.Flags[id] = value
 	win._controls[id] = ctl
 	return ctl
@@ -892,8 +916,6 @@ function Library:CreateWindow(o)
 	win._controls  = {}
 	win._tabs      = {}
 	win._groups    = {}
-	win._popups    = {}
-	win._fadeItems = nil
 	win.Open       = true
 	win.RailOpen   = false
 
@@ -924,7 +946,8 @@ function Library:CreateWindow(o)
 	local bleed = isMobile and win.Radius or 0
 	win.Bleed = bleed
 
-	win.Root = New("Frame", {
+	win.Root = New("CanvasGroup", {
+		GroupTransparency = 0,
 		Size = isMobile and UDim2.new(1, 0, L.panelHScale, bleed)
 			or UDim2.fromOffset(L.panelW, L.panelH),
 		AnchorPoint = Vector2.new(0.5, 0.5),
@@ -1089,7 +1112,7 @@ function Library:CreateWindow(o)
 	Pad(win.Search, 0, 8, 0, 30)
 	-- Иконка лежит рядом с полем, а не внутри него: UIPadding поля сдвигает
 	-- и текст, и своих детей, из-за чего иконка уезжала поверх плейсхолдера.
-	Icon("search", 14, Theme.text2, {
+	win.SearchIcon = Icon("search", 14, Theme.text2, {
 		Position = UDim2.fromOffset(9, 7),
 		ZIndex = 3,
 		Parent = content,
@@ -1321,6 +1344,7 @@ function Library:CreateWindow(o)
 			if i.UserInputType == Enum.UserInputType.MouseButton1
 			or i.UserInputType == Enum.UserInputType.Touch then
 				dragging = true
+				CloseActiveDropdown() -- список позиционируется один раз, за панелью не поедет
 				startPos = i.Position
 				startCenter = win.Root.AbsolutePosition + win.Root.AbsoluteSize / 2
 			end
@@ -1610,6 +1634,16 @@ function Window:SelectTab(tab)
 		IconColor(t.RailIcon, active and Theme.text0 or Theme.text2)
 	end
 	self.ActiveTab = tab
+
+	-- на вкладках Configs карточек нет, фильтровать нечего: прячем поле
+	-- поиска и отдаём освободившееся место контенту
+	local hideSearch = tab.IsConfigs == true
+	local shift = 28 + L.contentGap
+	self.Search.Visible = not hideSearch
+	self.SearchIcon.Visible = not hideSearch
+	self._pages.Position = hideSearch and UDim2.new() or UDim2.fromOffset(0, shift)
+	self._pages.Size = hideSearch and UDim2.fromScale(1, 1) or UDim2.new(1, 0, 1, -shift)
+
 	self:_ApplySearch()
 end
 
@@ -1815,7 +1849,9 @@ function Window:ToggleRail(state)
 			IconColor(self.RailToggleIcon, Theme.text2)
 		end
 	else
-		-- сворачивание: подписи гаснут первыми, затем едет ширина
+		-- 0.14 — общая длительность: ширина и подписи стартуют одновременно,
+		-- подписи успевают погаснуть за первые 0.06
+		Tween(self.Rail, { Size = UDim2.new(0, L.railW, 1, 0) }, 0.14)
 		for _, t in ipairs(self._tabs) do
 			Tween(t.RailLabel, { TextTransparency = 1 }, 0.06)
 		end
@@ -1827,102 +1863,61 @@ function Window:ToggleRail(state)
 			if self.RailOpen then return end
 			self.Dim.Visible = false
 		end)
+		-- заголовки групп меняются на разделители, когда уже погасли
 		task.delay(0.06, function()
 			if self.RailOpen then return end
-			Tween(self.Rail, { Size = UDim2.new(0, L.railW, 1, 0) }, 0.14)
 			for i, g in ipairs(self._groups) do
 				g.Header.Visible = false
 				g.Separator.Visible = (i > 1)
 			end
-			task.delay(0.14, function()
-				if not self.RailOpen then self.RailLine.Visible = false end
-			end)
+		end)
+		task.delay(0.14, function()
+			if not self.RailOpen then self.RailLine.Visible = false end
 		end)
 	end
 end
 
 ------------------------ ОТКРЫТИЕ / ЗАКРЫТИЕ --------------------------
 
-local function CollectFade(root)
-	local items = {}
-	for i = #FadeList, 1, -1 do
-		local o = FadeList[i]
-		if not o.Parent and o ~= root then
-			table.remove(FadeList, i)
-		elseif o == root or o:IsDescendantOf(root) then
-			if o:IsA("UIStroke") then
-				table.insert(items, { o = o, p = "Transparency", b = o.Transparency })
-			else
-				table.insert(items, { o = o, p = "BackgroundTransparency", b = o.BackgroundTransparency })
-				if o:IsA("TextLabel") or o:IsA("TextBox") or o:IsA("TextButton") then
-					table.insert(items, { o = o, p = "TextTransparency", b = o.TextTransparency })
-				end
-				if o:IsA("ImageLabel") or o:IsA("ImageButton") then
-					table.insert(items, { o = o, p = "ImageTransparency", b = o.ImageTransparency })
-				end
-			end
-		end
-	end
-	return items
-end
-
 function Window:Toggle(state)
 	if state == nil then state = not self.Open end
-	if state == self.Open and self._animVal then return end
+	if state == self.Open and self._animTween then return end
 	self.Open = state
 
-	for _, close in ipairs(self._popups) do close() end
+	CloseActiveDropdown()
 
-	-- если анимация уже идёт — переиспользуем снимок, иначе снимаем текущий
-	if not self._fadeItems then
-		self._fadeItems = CollectFade(self.Root)
-	end
-	local items = self._fadeItems
+	if self._animTween then self._animTween:Cancel() self._animTween = nil end
+	if self._scaleTween then self._scaleTween:Cancel() self._scaleTween = nil end
 
-	if self._animVal then
-		self._animVal:Destroy()
-		self._animVal = nil
-	end
-
-	local nv = Instance.new("NumberValue")
-	nv.Value = state and 0 or 1
-	self._animVal = nv
-
-	local function apply(a)
-		self.Scale.Scale = 0.96 + 0.04 * a
-		for _, it in ipairs(items) do
-			if it.o.Parent then it.o[it.p] = 1 - a * (1 - it.b) end
-		end
-	end
-
+	-- Root — CanvasGroup, поэтому вся панель гаснет одним GroupTransparency
+	-- и никакие значения прозрачности контролов не трогаются.
 	if state then
+		self.Root.GroupTransparency = 1
+		self.Scale.Scale = 0.96
 		self.Root.Visible = true
-		apply(0)
 	end
-	nv.Changed:Connect(apply)
 
-	local dur = state and 0.15 or 0.12
-	local dir = state and Enum.EasingDirection.Out or Enum.EasingDirection.In
-	local t = TweenService:Create(nv,
-		TweenInfo.new(dur, Enum.EasingStyle.Quad, dir),
-		{ Value = state and 1 or 0 })
+	local info = TweenInfo.new(
+		state and 0.15 or 0.12,
+		Enum.EasingStyle.Quad,
+		state and Enum.EasingDirection.Out or Enum.EasingDirection.In)
+
+	local t = TweenService:Create(self.Root, info, { GroupTransparency = state and 0 or 1 })
+	local ts = TweenService:Create(self.Scale, info, { Scale = state and 1 or 0.96 })
+	self._animTween, self._scaleTween = t, ts
+
 	t.Completed:Connect(function()
-		if self._animVal ~= nv then return end
-		-- вернуть исходные значения прозрачности и спрятать панель
-		for _, it in ipairs(items) do
-			if it.o.Parent then it.o[it.p] = it.b end
-		end
-		self.Scale.Scale = 1
+		if self._animTween ~= t then return end
 		self.Root.Visible = state
-		nv:Destroy()
-		self._animVal = nil
-		self._fadeItems = nil
+		self._animTween, self._scaleTween = nil, nil
 	end)
 	t:Play()
+	ts:Play()
 end
 
 function Window:Destroy()
-	if self._animVal then self._animVal:Destroy() self._animVal = nil end
+	if self._animTween then self._animTween:Cancel() self._animTween = nil end
+	if self._scaleTween then self._scaleTween:Cancel() self._scaleTween = nil end
 	if self.PopupGui then self.PopupGui:Destroy() end
 	if self.Gui then self.Gui:Destroy() end
 	for i, w in ipairs(Library._windows) do
@@ -1931,6 +1926,7 @@ function Window:Destroy()
 end
 
 function Library:Destroy()
+	CloseActiveDropdown()
 	for _, c in ipairs(self._connections) do
 		if c.Connected then c:Disconnect() end
 	end
@@ -1939,7 +1935,6 @@ function Library:Destroy()
 		self._windows[i]:Destroy()
 	end
 	table.clear(self.Flags)
-	table.clear(FadeList)
 end
 
 --=====================================================================
