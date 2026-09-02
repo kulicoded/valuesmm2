@@ -59,17 +59,20 @@ local Icons = {
 
 local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 
--- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ (для мобильной раскладки): высота футера, смещения кружка
--- тумблера 36x20, ширина дорожки числа слайдера. Значения — в таблице ниже.
+-- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ (для мобильной раскладки): смещения кружка тумблера
+-- 36x20, ширина дорожки числа слайдера. Значения — в таблице ниже.
 local L = isMobile and {
-	panelW      = 0,   panelH      = 0,    -- на весь экран
+	panelW      = 0,   panelH      = 0,    -- по ширине во весь экран
+	-- по высоте — доля вьюпорта: 700/860 из макета. Ниже панели остаётся
+	-- свободная зона под джойстик и кнопку прыжка.
+	panelHScale = 700 / 860,
 	headerH     = 56,  headerPad   = 16,
 	nameSize    = 18,  verSize     = 12,
 	closeHit    = 44,  closeIcon   = 12,
 	railW       = 64,  railWExp    = 64,   -- всегда свёрнут
 	railTop     = 4,   railItemH   = 44,   railIcon = 18,
 	railBottomH = 0,                        -- зоны разворота нет
-	footerH     = 26,
+	footerH     = 0,                        -- футера в мобильном макете нет
 	contentPad  = 16,  contentGap  = 12,
 	cardPad     = 16,  cardRowGap  = 8,    cardRadius = 8,
 	gridGap     = 12,  columns     = 1,
@@ -915,10 +918,18 @@ function Library:CreateWindow(o)
 		Parent = parent,
 	})
 
+	-- UICorner скругляет все четыре угла сразу. Чтобы верхние были прямыми,
+	-- уводим верх панели за край экрана на величину радиуса: скругление там
+	-- есть, но оно не в кадре. Всё содержимое смещаем на ту же величину.
+	local bleed = isMobile and win.Radius or 0
+	win.Bleed = bleed
+
 	win.Root = New("Frame", {
-		Size = isMobile and UDim2.fromScale(1, 1) or UDim2.fromOffset(L.panelW, L.panelH),
+		Size = isMobile and UDim2.new(1, 0, L.panelHScale, bleed)
+			or UDim2.fromOffset(L.panelW, L.panelH),
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
+		Position = isMobile and UDim2.new(0.5, 0, L.panelHScale / 2, -bleed / 2)
+			or UDim2.fromScale(0.5, 0.5),
 		BackgroundColor3 = Theme.bg1,
 		BorderSizePixel = 0,
 		ClipsDescendants = true,
@@ -930,13 +941,14 @@ function Library:CreateWindow(o)
 
 	-------------------------------- ШАПКА -------------------------------
 	local header = New("Frame", {
-		Size = UDim2.new(1, 0, 0, L.headerH),
+		Size = UDim2.new(1, 0, 0, L.headerH + bleed),
 		BackgroundColor3 = isMobile and Theme.bg1 or Theme.bg1,
 		BackgroundTransparency = 0,
 		BorderSizePixel = 0,
 		Active = true,
 		Parent = win.Root,
 	})
+	if bleed > 0 then Pad(header, bleed, 0, 0, 0) end -- ушедшая за экран часть
 	New("Frame", { -- нижняя линия шапки
 		Size = UDim2.new(1, 0, 0, 1),
 		Position = UDim2.new(0, 0, 1, -1),
@@ -1038,10 +1050,10 @@ function Library:CreateWindow(o)
 	})
 
 	--------------------------------- ТЕЛО -------------------------------
-	local bodyH = -(L.headerH + L.footerH)
+	local bodyTop = L.headerH + bleed
 	local body = New("Frame", {
-		Size = UDim2.new(1, 0, 1, bodyH),
-		Position = UDim2.fromOffset(0, L.headerH),
+		Size = UDim2.new(1, 0, 1, -(bodyTop + L.footerH)),
+		Position = UDim2.fromOffset(0, bodyTop),
 		BackgroundTransparency = 1,
 		Parent = win.Root,
 	})
@@ -1162,6 +1174,8 @@ function Library:CreateWindow(o)
 	end
 
 	-------------------------------- ФУТЕР -------------------------------
+	-- В мобильном макете футера нет, FPS/мс остаются только в ватермарке.
+	if not isMobile then
 	local footer = New("Frame", {
 		Size = UDim2.new(1, 0, 0, L.footerH),
 		Position = UDim2.new(0, 0, 1, -L.footerH),
@@ -1217,6 +1231,7 @@ function Library:CreateWindow(o)
 		Text = win.ToggleKey.Name .. " — открыть/закрыть",
 		Parent = footer,
 	})
+	end
 
 	------------------------------ ВАТЕРМАРК -----------------------------
 	local wm = New("Frame", {
@@ -1278,8 +1293,8 @@ function Library:CreateWindow(o)
 		if elapsed >= 0.5 then
 			local fps = math.floor(frames / elapsed + 0.5)
 			local ms = math.floor(elapsed / math.max(frames, 1) * 1000 + 0.5)
-			win.FpsLabel.Text = fps .. " FPS"
-			win.MsLabel.Text = ms .. " ms"
+			if win.FpsLabel then win.FpsLabel.Text = fps .. " FPS" end
+			if win.MsLabel then win.MsLabel.Text = ms .. " ms" end
 			win.WmFps.Text = fps .. " FPS"
 			win.WmMs.Text = ms .. " ms"
 			frames, elapsed = 0, 0
@@ -1297,8 +1312,10 @@ function Library:CreateWindow(o)
 		win:Toggle()
 	end)
 
-	-- перетаскивание за шапку, с ограничением по экрану
-	do
+	-- Перетаскивание за шапку, с ограничением по экрану.
+	-- На мобильной раскладке отключено: панель прижата к верху, а любое
+	-- смещение вниз залезло бы в свободную зону под джойстик и прыжок.
+	if not isMobile then
 		local dragging, startPos, startCenter = false, nil, nil
 		Connect(header.InputBegan, function(i)
 			if i.UserInputType == Enum.UserInputType.MouseButton1
