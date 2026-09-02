@@ -1,0 +1,1960 @@
+--!nonstrict
+--=====================================================================
+-- Woarder — UI-библиотека меню-панели для Roblox (Luau, LocalScript)
+-- Только каркас интерфейса и контролы. Прикладной логики нет.
+--=====================================================================
+
+--============================ SERVICES ===============================
+local Players           = game:GetService("Players")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local RunService        = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+
+--======================= THEME / CONFIG / ICONS ======================
+
+local Theme = {
+	bg0    = Color3.fromHex("12131b"),
+	bg1    = Color3.fromHex("181a25"),
+	bg2    = Color3.fromHex("20222d"),
+	stroke = Color3.fromHex("33353f"),
+	accent = Color3.fromHex("9184d9"),
+	text0  = Color3.fromHex("eef0f5"),
+	text1  = Color3.fromHex("9aa0b4"),
+	text2  = Color3.fromHex("5c6072"),
+	text3  = Color3.fromHex("454854"),
+	dim    = Color3.fromHex("0b0c10"),
+
+	Font       = Enum.Font.Gotham,       -- в макете Inter; в Roblox берём Gotham (см. заметки)
+	FontMedium = Enum.Font.GothamMedium, -- вес 500
+	FontBold   = Enum.Font.GothamBold,   -- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: шрифт для веса 600 (логотип)
+
+	knob = Color3.fromRGB(255, 255, 255), -- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: точный белый кружка тумблера
+}
+
+local Config = {
+	Parent       = nil,   -- по умолчанию PlayerGui, подставляется ниже
+	DisplayOrder = 100,
+
+	Name      = "NAME",
+	Version   = "v1.0.4",
+	Logo      = "",
+	LogoText  = "",
+	Accent    = Theme.accent,
+	Radius    = 8,        -- диапазон 2..14
+	ToggleKey = Enum.KeyCode.RightControl,
+
+	-- Абстракция хранилища конфигов. По умолчанию — обычная таблица в памяти.
+	Storage = nil,
+}
+
+-- Иконки заполняет пользователь библиотеки. Пустая строка -> рисуется квадрат-заглушка.
+local Icons = {
+	aim = "", eye = "", activity = "", globe = "", box = "", folder = "", gear = "",
+	close = "", collapse = "", expand = "", search = "", chevron = "", check = "",
+}
+
+--=========================== КОНСТАНТЫ РАСКЛАДКИ ======================
+
+local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+
+-- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ (для мобильной раскладки): высота футера, смещения кружка
+-- тумблера 36x20, ширина дорожки числа слайдера. Значения — в таблице ниже.
+local L = isMobile and {
+	panelW      = 0,   panelH      = 0,    -- на весь экран
+	headerH     = 56,  headerPad   = 16,
+	nameSize    = 18,  verSize     = 12,
+	closeHit    = 44,  closeIcon   = 12,
+	railW       = 64,  railWExp    = 64,   -- всегда свёрнут
+	railTop     = 4,   railItemH   = 44,   railIcon = 18,
+	railBottomH = 0,                        -- зоны разворота нет
+	footerH     = 26,
+	contentPad  = 16,  contentGap  = 12,
+	cardPad     = 16,  cardRowGap  = 8,    cardRadius = 8,
+	gridGap     = 12,  columns     = 1,
+	rowH        = 44,
+	fontMain    = 15,  fontSmall   = 11,   fontRow = 15,
+	togW        = 36,  togH        = 20,   togKnob = 16, togOnY = 2, togOffY = 2,
+	trackW      = 120, trackH      = 5,    trackR  = 3,
+} or {
+	panelW      = 720, panelH      = 460,
+	headerH     = 44,  headerPad   = 14,
+	nameSize    = 16,  verSize     = 11,
+	closeHit    = 20,  closeIcon   = 12,
+	railW       = 64,  railWExp    = 180,
+	railTop     = 4,   railItemH   = 32,   railIcon = 16,
+	railBottomH = 40,
+	footerH     = 26,
+	contentPad  = 14,  contentGap  = 10,
+	cardPad     = 14,  cardRowGap  = 8,    cardRadius = nil, -- = Config.Radius
+	gridGap     = 12,  columns     = 2,
+	rowH        = 32,
+	fontMain    = 16,  fontSmall   = 11,   fontRow = 13,
+	togW        = 30,  togH        = 17,   togKnob = 12, togOnY = 2, togOffY = 1,
+	trackW      = 100, trackH      = 4,    trackR  = 2,
+}
+
+--============================== УТИЛИТЫ ===============================
+
+-- Список объектов, участвующих в затухании панели при открытии/закрытии.
+local FadeList = {}
+
+local function New(class, props, children)
+	local inst = Instance.new(class)
+	local parent
+	if props then
+		for k, v in pairs(props) do
+			if k == "Parent" then parent = v else inst[k] = v end
+		end
+	end
+	if children then
+		for _, c in ipairs(children) do c.Parent = inst end
+	end
+	if parent then inst.Parent = parent end
+	if inst:IsA("GuiObject") or inst:IsA("UIStroke") then
+		table.insert(FadeList, inst)
+	end
+	return inst
+end
+
+local function Corner(parent, r)
+	return New("UICorner", { CornerRadius = UDim.new(0, r), Parent = parent })
+end
+
+local function Round(parent) -- полностью скруглённый
+	return New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = parent })
+end
+
+local function Stroke(parent, color, thickness)
+	return New("UIStroke", {
+		Color = color or Theme.stroke,
+		Thickness = thickness or 1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = parent,
+	})
+end
+
+local function Pad(parent, t, r, b, l)
+	return New("UIPadding", {
+		PaddingTop = UDim.new(0, t), PaddingRight = UDim.new(0, r),
+		PaddingBottom = UDim.new(0, b), PaddingLeft = UDim.new(0, l),
+		Parent = parent,
+	})
+end
+
+local function ListLayout(parent, dir, padding, hAlign, vAlign)
+	return New("UIListLayout", {
+		FillDirection = dir,
+		Padding = UDim.new(0, padding),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = hAlign or Enum.HorizontalAlignment.Left,
+		VerticalAlignment = vAlign or Enum.VerticalAlignment.Top,
+		Parent = parent,
+	})
+end
+
+local function Tween(obj, props, dur, style, dir)
+	local info = TweenInfo.new(
+		dur or 0.12,
+		style or Enum.EasingStyle.Quad,
+		dir or Enum.EasingDirection.Out
+	)
+	local t = TweenService:Create(obj, info, props)
+	t:Play()
+	return t
+end
+
+local function Clamp(v, a, b)
+	if v < a then return a elseif v > b then return b end
+	return v
+end
+
+-- Верхний регистр с поддержкой кириллицы (string.upper её не берёт).
+local function Upper(s)
+	local out = {}
+	for _, c in utf8.codes(s) do
+		if c >= 1072 and c <= 1103 then c = c - 32
+		elseif c == 1105 then c = 1025 end
+		table.insert(out, utf8.char(c))
+	end
+	return string.upper(table.concat(out))
+end
+
+-- Имитация увеличенного межбуквенного интервала: в Roblox его нет, вставляем пробелы.
+local function Spaced(s)
+	local out = {}
+	for _, c in utf8.codes(s) do table.insert(out, utf8.char(c)) end
+	return table.concat(out, " ")
+end
+
+-- Иконка: картинка, если assetId задан, иначе квадрат-заглушка цвета иконки.
+local function Icon(name, size, color, props)
+	local base = {
+		Size = UDim2.fromOffset(size, size),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}
+	for k, v in pairs(props or {}) do base[k] = v end
+
+	local id = Icons[name] or ""
+	if id ~= "" then
+		base.Image = id
+		base.ImageColor3 = color
+		base.ScaleType = Enum.ScaleType.Fit
+		return New("ImageLabel", base)
+	end
+	base.BackgroundTransparency = 0
+	base.BackgroundColor3 = color
+	local f = New("Frame", base)
+	Corner(f, 3) -- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: скругление заглушки иконки
+	return f
+end
+
+local function IconColor(obj, color, dur)
+	local prop = obj:IsA("ImageLabel") and "ImageColor3" or "BackgroundColor3"
+	if dur then Tween(obj, { [prop] = color }, dur) else obj[prop] = color end
+end
+
+--============================== БИБЛИОТЕКА ============================
+
+local Library = {
+	Flags = {},
+	Theme = Theme,
+	Icons = Icons,
+	Config = Config,
+	_connections = {},
+	_windows = {},
+}
+
+local function Connect(signal, fn)
+	local c = signal:Connect(fn)
+	table.insert(Library._connections, c)
+	return c
+end
+
+--=========================== ХРАНИЛИЩЕ ПО УМОЛЧАНИЮ ===================
+
+local function MakeMemoryStorage()
+	local store = {}
+	local order = {}
+	return {
+		save = function(name, data)
+			if store[name] == nil then table.insert(order, name) end
+			store[name] = { data = data, date = os.date("%d.%m.%Y %H:%M") }
+		end,
+		load = function(name)
+			local e = store[name]
+			return e and e.data or nil
+		end,
+		list = function()
+			local out = {}
+			for _, name in ipairs(order) do
+				table.insert(out, { name = name, date = store[name].date })
+			end
+			return out
+		end,
+		delete = function(name)
+			store[name] = nil
+			for i, n in ipairs(order) do
+				if n == name then table.remove(order, i) break end
+			end
+		end,
+	}
+end
+
+--=============================== ФАБРИКИ ==============================
+-- Все фабрики контролов принимают окно (win) — из него берутся акцент и радиус.
+
+-- Регистрация объекта, который перекрашивается при смене акцента.
+local function MarkAccent(win, inst, prop)
+	table.insert(win._accent, { inst = inst, prop = prop })
+	inst[prop] = win.Accent
+end
+
+--------------------------------- TOGGLE -------------------------------
+local function MakeToggle(win, row, opts)
+	local ctl = {}
+	local value = opts.Default == true
+	local id = opts.Flag or opts.Name
+
+	local body = New("TextButton", {
+		Size = UDim2.fromOffset(L.togW, L.togH),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		BackgroundColor3 = value and win.Accent or Theme.bg1,
+		AutoButtonColor = false,
+		Text = "",
+		BorderSizePixel = 0,
+		Parent = row.Control,
+	})
+	Corner(body, 9)
+	local st = Stroke(body)
+	st.Transparency = value and 1 or 0
+
+	local knob = New("Frame", {
+		Size = UDim2.fromOffset(L.togKnob, L.togKnob),
+		BackgroundColor3 = value and Theme.knob or Theme.text2,
+		BorderSizePixel = 0,
+		Position = value
+			and UDim2.fromOffset(L.togW - L.togKnob - 2, L.togOnY)
+			or UDim2.fromOffset(2, L.togOffY),
+		Parent = body,
+	})
+	Round(knob)
+
+	local function render(animate)
+		local dur = animate and 0.12 or 0
+		local pos = value
+			and UDim2.fromOffset(L.togW - L.togKnob - 2, L.togOnY)
+			or UDim2.fromOffset(2, L.togOffY)
+		if animate then
+			Tween(body, { BackgroundColor3 = value and win.Accent or Theme.bg1 }, dur)
+			Tween(knob, { Position = pos, BackgroundColor3 = value and Theme.knob or Theme.text2 }, dur)
+			Tween(st, { Transparency = value and 1 or 0 }, dur)
+		else
+			body.BackgroundColor3 = value and win.Accent or Theme.bg1
+			knob.Position = pos
+			knob.BackgroundColor3 = value and Theme.knob or Theme.text2
+			st.Transparency = value and 1 or 0
+		end
+	end
+
+	function ctl:Set(v, silent)
+		v = v == true
+		if v == value then return end
+		value = v
+		Library.Flags[id] = value
+		render(true)
+		if not silent and opts.Callback then opts.Callback(value) end
+	end
+	function ctl:Get() return value end
+	function ctl:SetVisible(b) row:SetVisible(b) end
+
+	Connect(body.MouseButton1Click, function()
+		ctl:Set(not value)
+	end)
+
+	Library.Flags[id] = value
+	win._controls[id] = ctl
+	return ctl
+end
+
+--------------------------------- SLIDER -------------------------------
+local function MakeSlider(win, row, opts)
+	local ctl = {}
+	local min, max = opts.Min or 0, opts.Max or 100
+	local step = opts.Step or 1
+	local value = Clamp(opts.Default or min, min, max)
+	local id = opts.Flag or opts.Name
+
+	-- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: промежуток между дорожкой и числом (взято 8).
+	local gap = 8
+	local holder = New("Frame", {
+		Size = UDim2.fromOffset(L.trackW + gap + 20, row.Height),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		BackgroundTransparency = 1,
+		Parent = row.Control,
+	})
+
+	-- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: зона захвата шире дорожки (4px мышью не поймать).
+	local hit = New("TextButton", {
+		Size = UDim2.fromOffset(L.trackW, 20),
+		Position = UDim2.new(0, 0, 0.5, -10),
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Text = "",
+		Parent = holder,
+	})
+
+	local track = New("Frame", {
+		Size = UDim2.fromOffset(L.trackW, L.trackH),
+		Position = UDim2.new(0, 0, 0.5, -L.trackH / 2),
+		BackgroundColor3 = Theme.bg1,
+		BorderSizePixel = 0,
+		Parent = holder,
+	})
+	Corner(track, L.trackR)
+
+	local fill = New("Frame", {
+		Size = UDim2.new((value - min) / math.max(max - min, 1), 0, 1, 0),
+		BackgroundColor3 = win.Accent,
+		BorderSizePixel = 0,
+		Parent = track,
+	})
+	Corner(fill, L.trackR)
+	MarkAccent(win, fill, "BackgroundColor3")
+
+	local numLabel = New("TextLabel", {
+		Size = UDim2.fromOffset(20, row.Height),
+		Position = UDim2.fromOffset(L.trackW + gap, 0),
+		BackgroundTransparency = 1,
+		Font = Theme.Font,
+		TextSize = L.fontRow,
+		TextColor3 = Theme.text1,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Text = tostring(value),
+		Parent = holder,
+	})
+
+	local function render()
+		fill.Size = UDim2.new((value - min) / math.max(max - min, 1), 0, 1, 0)
+		numLabel.Text = tostring(value)
+	end
+
+	local function quantize(raw)
+		local v = min + math.floor((raw - min) / step + 0.5) * step
+		return Clamp(v, min, max)
+	end
+
+	function ctl:Set(v, silent)
+		v = quantize(Clamp(v, min, max))
+		if v == value then return end
+		value = v
+		Library.Flags[id] = value
+		render()
+		if not silent and opts.Callback then opts.Callback(value) end
+	end
+	function ctl:Get() return value end
+	function ctl:SetVisible(b) row:SetVisible(b) end
+
+	local dragging = false
+	local function updateFrom(px)
+		local a = Clamp((px - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+		ctl:Set(min + a * (max - min))
+	end
+
+	Connect(hit.InputBegan, function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+		or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			updateFrom(i.Position.X)
+		end
+	end)
+	Connect(UserInputService.InputChanged, function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement
+			or i.UserInputType == Enum.UserInputType.Touch) then
+			updateFrom(i.Position.X)
+		end
+	end)
+	Connect(UserInputService.InputEnded, function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+		or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	Library.Flags[id] = value
+	win._controls[id] = ctl
+	render()
+	return ctl
+end
+
+-------------------------------- DROPDOWN ------------------------------
+-- Список рисуется в отдельном ScreenGui, чтобы карточка его не обрезала.
+local function MakeDropdown(win, row, opts)
+	local ctl = {}
+	local options = opts.Options or {}
+	local value = opts.Default or options[1] or ""
+	local id = opts.Flag or opts.Name
+	local open = false
+
+	local box = New("TextButton", {
+		Size = UDim2.fromOffset(110, 26),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		BackgroundColor3 = Theme.bg1,
+		AutoButtonColor = false,
+		Text = "",
+		BorderSizePixel = 0,
+		Parent = row.Control,
+	})
+	Corner(box, 6)
+	Stroke(box)
+	Pad(box, 0, 8, 0, 8)
+
+	local valueLabel = New("TextLabel", {
+		Size = UDim2.new(1, -16, 1, 0),
+		BackgroundTransparency = 1,
+		Font = Theme.Font,
+		TextSize = 13,
+		TextColor3 = Theme.text1,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = tostring(value),
+		Parent = box,
+	})
+	local chev = Icon("chevron", 12, Theme.text2, {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		Parent = box,
+	})
+
+	-- сам список
+	local list = New("Frame", {
+		BackgroundColor3 = Theme.bg1,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 10,
+		Size = UDim2.fromOffset(110, 0),
+		Parent = win.PopupGui,
+	})
+	Corner(list, 6)
+	Stroke(list)
+	local listScroll = New("ScrollingFrame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 2,
+		ScrollBarImageColor3 = Theme.stroke,
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ZIndex = 10,
+		Parent = list,
+	})
+	ListLayout(listScroll, Enum.FillDirection.Vertical, 0)
+
+	local rowsById = {}
+	local function refreshMarks()
+		for _, e in ipairs(rowsById) do
+			e.check.Visible = (e.name == value)
+		end
+	end
+
+	local function closeList()
+		if not open then return end
+		open = false
+		list.Visible = false
+	end
+
+	local function openList()
+		open = true
+		-- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: максимум 6 видимых пунктов, дальше прокрутка.
+		local h = math.min(#options, 6) * 26
+		local pos = box.AbsolutePosition
+		local size = box.AbsoluteSize
+		local screen = win.Gui.AbsoluteSize
+		local y = pos.Y + size.Y + 4
+		if y + h > screen.Y then y = math.max(0, pos.Y - h - 4) end
+		list.Position = UDim2.fromOffset(pos.X, y)
+		list.Size = UDim2.fromOffset(math.max(size.X, 110), h)
+		list.Visible = true
+		refreshMarks()
+	end
+
+	for _, name in ipairs(options) do
+		local item = New("TextButton", {
+			Size = UDim2.new(1, 0, 0, 26),
+			BackgroundColor3 = Theme.bg2,
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Text = "",
+			BorderSizePixel = 0,
+			ZIndex = 10,
+			Parent = listScroll,
+		})
+		Pad(item, 0, 8, 0, 8)
+		New("TextLabel", {
+			Size = UDim2.new(1, -18, 1, 0),
+			BackgroundTransparency = 1,
+			Font = Theme.Font,
+			TextSize = 13,
+			TextColor3 = Theme.text1,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = name,
+			ZIndex = 10,
+			Parent = item,
+		})
+		local check = Icon("check", 12, win.Accent, {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, 0, 0.5, 0),
+			Visible = false,
+			ZIndex = 10,
+			Parent = item,
+		})
+		MarkAccent(win, check, check:IsA("ImageLabel") and "ImageColor3" or "BackgroundColor3")
+		table.insert(rowsById, { name = name, check = check })
+
+		Connect(item.MouseEnter, function() item.BackgroundTransparency = 0 end)
+		Connect(item.MouseLeave, function() item.BackgroundTransparency = 1 end)
+		Connect(item.MouseButton1Click, function()
+			ctl:Set(name)
+			closeList()
+		end)
+	end
+
+	function ctl:Set(v, silent)
+		if v == value then return end
+		value = v
+		Library.Flags[id] = value
+		valueLabel.Text = tostring(value)
+		refreshMarks()
+		if not silent and opts.Callback then opts.Callback(value) end
+	end
+	function ctl:Get() return value end
+	function ctl:SetVisible(b) row:SetVisible(b) closeList() end
+
+	Connect(box.MouseButton1Click, function()
+		if open then closeList() else openList() end
+	end)
+
+	-- клик мимо списка закрывает его
+	Connect(UserInputService.InputBegan, function(i)
+		if not open then return end
+		if i.UserInputType ~= Enum.UserInputType.MouseButton1
+		and i.UserInputType ~= Enum.UserInputType.Touch then return end
+		local p, s = list.AbsolutePosition, list.AbsoluteSize
+		local m = i.Position
+		local insideList = m.X >= p.X and m.X <= p.X + s.X and m.Y >= p.Y and m.Y <= p.Y + s.Y
+		local bp, bs = box.AbsolutePosition, box.AbsoluteSize
+		local insideBox = m.X >= bp.X and m.X <= bp.X + bs.X and m.Y >= bp.Y and m.Y <= bp.Y + bs.Y
+		if not insideList and not insideBox then closeList() end
+	end)
+
+	table.insert(win._popups, closeList)
+	Library.Flags[id] = value
+	win._controls[id] = ctl
+	return ctl
+end
+
+--------------------------------- BUTTON -------------------------------
+local function MakeButton(win, row, opts)
+	local ctl = {}
+	local btn = New("TextButton", {
+		Size = UDim2.fromOffset(0, 28),
+		AutomaticSize = Enum.AutomaticSize.X,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Font = Theme.Font,
+		TextSize = 13,
+		TextColor3 = win.Accent,
+		Text = opts.Name or "",
+		BorderSizePixel = 0,
+		Parent = row.Control,
+	})
+	Corner(btn, 6)
+	Pad(btn, 0, 12, 0, 12)
+	local st = Stroke(btn, win.Accent)
+	MarkAccent(win, btn, "TextColor3")
+	MarkAccent(win, st, "Color")
+
+	Connect(btn.MouseButton1Click, function()
+		if opts.Callback then opts.Callback() end
+	end)
+
+	function ctl:Set() end
+	function ctl:Get() return nil end
+	function ctl:SetVisible(b) row:SetVisible(b) end
+	return ctl
+end
+
+-------------------------------- TEXTBOX -------------------------------
+local function MakeTextbox(win, row, opts)
+	local ctl = {}
+	local id = opts.Flag or opts.Name
+	local value = opts.Default or ""
+
+	local frame = New("Frame", {
+		-- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: ширина текстового поля в строке карточки (взято 140).
+		Size = UDim2.fromOffset(140, 28),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		BackgroundColor3 = Theme.bg2,
+		BorderSizePixel = 0,
+		Parent = row.Control,
+	})
+	Corner(frame, 6)
+	Stroke(frame)
+
+	local tb = New("TextBox", {
+		Size = UDim2.new(1, -16, 1, 0),
+		Position = UDim2.fromOffset(8, 0),
+		BackgroundTransparency = 1,
+		Font = Theme.Font,
+		TextSize = 13,
+		TextColor3 = Theme.text0,
+		PlaceholderColor3 = Theme.text3,
+		PlaceholderText = opts.Placeholder or "",
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ClearTextOnFocus = false,
+		Text = value,
+		Parent = frame,
+	})
+
+	function ctl:Set(v, silent)
+		v = tostring(v)
+		if v == value then return end
+		value = v
+		tb.Text = v
+		Library.Flags[id] = v
+		if not silent and opts.Callback then opts.Callback(v) end
+	end
+	function ctl:Get() return value end
+	function ctl:SetVisible(b) row:SetVisible(b) end
+
+	Connect(tb.FocusLost, function()
+		if tb.Text ~= value then
+			value = tb.Text
+			Library.Flags[id] = value
+			if opts.Callback then opts.Callback(value) end
+		end
+	end)
+
+	Library.Flags[id] = value
+	win._controls[id] = ctl
+	return ctl
+end
+
+-------------------------------- KEYBIND -------------------------------
+local function MakeKeybind(win, row, opts)
+	local ctl = {}
+	local id = opts.Flag or opts.Name
+	local key = opts.Default
+	local listening = false
+
+	local box = New("TextButton", {
+		Size = UDim2.fromOffset(110, 26),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		BackgroundColor3 = Theme.bg1,
+		AutoButtonColor = false,
+		Text = "",
+		BorderSizePixel = 0,
+		Parent = row.Control,
+	})
+	Corner(box, 6)
+	Stroke(box)
+	Pad(box, 0, 8, 0, 8)
+
+	local label = New("TextLabel", {
+		Size = UDim2.new(1, -16, 1, 0),
+		BackgroundTransparency = 1,
+		Font = Theme.Font,
+		TextSize = 13,
+		TextColor3 = Theme.text1,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = key and key.Name or "",
+		Parent = box,
+	})
+	Icon("chevron", 12, Theme.text2, {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		Parent = box,
+	})
+
+	function ctl:Set(v, silent)
+		if v == key then return end
+		key = v
+		Library.Flags[id] = key
+		label.Text = key and key.Name or ""
+		if not silent and opts.Callback then opts.Callback(key) end
+	end
+	function ctl:Get() return key end
+	function ctl:SetVisible(b) row:SetVisible(b) end
+
+	Connect(box.MouseButton1Click, function()
+		if listening then return end
+		listening = true
+		label.Text = "..."
+	end)
+
+	Connect(UserInputService.InputBegan, function(i, processed)
+		if not listening then return end
+		if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+		listening = false
+		-- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: Escape отменяет назначение (иначе режим не выйти).
+		if i.KeyCode == Enum.KeyCode.Escape then
+			label.Text = key and key.Name or ""
+			return
+		end
+		ctl:Set(i.KeyCode)
+	end)
+
+	Library.Flags[id] = key
+	win._controls[id] = ctl
+	return ctl
+end
+
+--============================ СБОРКА ОКНА =============================
+
+local Window = {}
+Window.__index = Window
+
+------------------------------- Row / Card -----------------------------
+
+local function AddRow(win, card, labelText, secondary)
+	local row = { Height = L.rowH, UserVisible = true, Text = labelText or "" }
+
+	row.Frame = New("Frame", {
+		Size = UDim2.new(1, 0, 0, L.rowH),
+		BackgroundTransparency = 1,
+		LayoutOrder = #card._rows + 2,
+		Parent = card.Frame,
+	})
+	row.Label = New("TextLabel", {
+		Size = UDim2.new(1, -140, 1, 0),
+		BackgroundTransparency = 1,
+		Font = Theme.Font,
+		TextSize = L.fontRow,
+		TextColor3 = secondary and Theme.text1 or Theme.text0,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = labelText or "",
+		Parent = row.Frame,
+	})
+	row.Control = New("Frame", {
+		Size = UDim2.new(0, 200, 1, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 0),
+		BackgroundTransparency = 1,
+		Parent = row.Frame,
+	})
+
+	function row:SetVisible(b)
+		self.UserVisible = b and true or false
+		self.Frame.Visible = self.UserVisible
+	end
+
+	table.insert(card._rows, row)
+	return row
+end
+
+local Card = {}
+Card.__index = Card
+
+function Card:AddToggle(opts)   return MakeToggle(self._win,   AddRow(self._win, self, opts.Name), opts) end
+function Card:AddSlider(opts)   return MakeSlider(self._win,   AddRow(self._win, self, opts.Name), opts) end
+function Card:AddDropdown(opts) return MakeDropdown(self._win, AddRow(self._win, self, opts.Name), opts) end
+function Card:AddButton(opts)   return MakeButton(self._win,   AddRow(self._win, self, opts.Name), opts) end
+function Card:AddTextbox(opts)  return MakeTextbox(self._win,  AddRow(self._win, self, opts.Name), opts) end
+function Card:AddKeybind(opts)  return MakeKeybind(self._win,  AddRow(self._win, self, opts.Name), opts) end
+
+local Tab = {}
+Tab.__index = Tab
+
+function Tab:AddCard(opts)
+	local win = self._win
+	local col = self._columns[(#self._cards % L.columns) + 1]
+
+	local card = setmetatable({ _win = win, _rows = {} }, Card)
+	card.Frame = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.bg2,
+		BorderSizePixel = 0,
+		LayoutOrder = #self._cards + 1,
+		Parent = col,
+	})
+	Corner(card.Frame, L.cardRadius or win.Radius)
+	Stroke(card.Frame)
+	Pad(card.Frame, L.cardPad, L.cardPad, L.cardPad, L.cardPad)
+	ListLayout(card.Frame, Enum.FillDirection.Vertical, L.cardRowGap)
+
+	card.Title = New("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 16),
+		BackgroundTransparency = 1,
+		Font = Theme.FontMedium,
+		TextSize = L.fontRow,
+		TextColor3 = Theme.text0,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = opts.Name or "",
+		LayoutOrder = 1,
+		Parent = card.Frame,
+	})
+
+	table.insert(self._cards, card)
+	return card
+end
+
+----------------------------- CreateWindow -----------------------------
+
+function Library:CreateWindow(o)
+	o = o or {}
+	local win = setmetatable({}, Window)
+
+	win.Name      = o.Name or Config.Name
+	win.Version   = o.Version or Config.Version
+	win.Accent    = o.Accent or Config.Accent
+	win.Radius    = Clamp(o.Radius or Config.Radius, 2, 14)
+	win.ToggleKey = o.ToggleKey or Config.ToggleKey
+	win.LogoValue = o.Logo or Config.Logo
+	win.LogoText  = o.LogoText or Config.LogoText
+	win.Storage   = o.Storage or Config.Storage or MakeMemoryStorage()
+
+	win._accent    = {}
+	win._controls  = {}
+	win._tabs      = {}
+	win._groups    = {}
+	win._popups    = {}
+	win._fadeItems = nil
+	win.Open       = true
+	win.RailOpen   = false
+
+	local parent = o.Parent or Config.Parent or LocalPlayer:WaitForChild("PlayerGui")
+
+	--------------------------------- GUI --------------------------------
+	win.Gui = New("ScreenGui", {
+		Name = "WoarderUI",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = Config.DisplayOrder,
+		Parent = parent,
+	})
+	-- отдельный слой для выпадающих списков: их не должна обрезать карточка
+	win.PopupGui = New("ScreenGui", {
+		Name = "WoarderPopups",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = Config.DisplayOrder + 1,
+		Parent = parent,
+	})
+
+	win.Root = New("Frame", {
+		Size = isMobile and UDim2.fromScale(1, 1) or UDim2.fromOffset(L.panelW, L.panelH),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		BackgroundColor3 = Theme.bg1,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		Parent = win.Gui,
+	})
+	Corner(win.Root, win.Radius)
+	Stroke(win.Root)
+	win.Scale = New("UIScale", { Scale = 1, Parent = win.Root })
+
+	-------------------------------- ШАПКА -------------------------------
+	local header = New("Frame", {
+		Size = UDim2.new(1, 0, 0, L.headerH),
+		BackgroundColor3 = isMobile and Theme.bg1 or Theme.bg1,
+		BackgroundTransparency = 0,
+		BorderSizePixel = 0,
+		Active = true,
+		Parent = win.Root,
+	})
+	New("Frame", { -- нижняя линия шапки
+		Size = UDim2.new(1, 0, 0, 1),
+		Position = UDim2.new(0, 0, 1, -1),
+		BackgroundColor3 = Theme.stroke,
+		BorderSizePixel = 0,
+		Parent = header,
+	})
+
+	local hLeft = New("Frame", {
+		Size = UDim2.new(0, 400, 1, 0),
+		Position = UDim2.fromOffset(L.headerPad, 0),
+		BackgroundTransparency = 1,
+		Parent = header,
+	})
+	ListLayout(hLeft, Enum.FillDirection.Horizontal, 10,
+		Enum.HorizontalAlignment.Left, Enum.VerticalAlignment.Center)
+
+	-- слот логотипа (на мобильной раскладке отсутствует)
+	if not isMobile then
+		win.LogoSlot = New("Frame", {
+			Size = UDim2.fromOffset(24, 24),
+			BackgroundColor3 = Theme.bg2,
+			BorderSizePixel = 0,
+			LayoutOrder = 1,
+			Parent = hLeft,
+		})
+		Corner(win.LogoSlot, 6)
+		Stroke(win.LogoSlot)
+	end
+
+	win.NameLabel = New("TextLabel", {
+		Size = UDim2.new(0, 0, 0, L.nameSize + 4),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+		Font = Theme.FontMedium,
+		TextSize = L.nameSize,
+		TextColor3 = Theme.text0,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = win.Name,
+		LayoutOrder = 2,
+		Parent = hLeft,
+	})
+	win.VerLabel = New("TextLabel", {
+		Size = UDim2.new(0, 0, 0, L.verSize + 4),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+		Font = Theme.Font,
+		TextSize = L.verSize,
+		TextColor3 = Theme.text2,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = win.Version,
+		LayoutOrder = 3,
+		Parent = hLeft,
+	})
+
+	local hRight = New("Frame", {
+		Size = UDim2.new(0, 320, 1, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -L.headerPad, 0, 0),
+		BackgroundTransparency = 1,
+		Parent = header,
+	})
+	ListLayout(hRight, Enum.FillDirection.Horizontal, 12,
+		Enum.HorizontalAlignment.Right, Enum.VerticalAlignment.Center)
+
+	New("TextLabel", {
+		Size = UDim2.new(0, 0, 0, 17),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+		Font = Theme.Font,
+		TextSize = 13,
+		TextColor3 = Theme.text1,
+		Text = LocalPlayer.Name,
+		LayoutOrder = 1,
+		Parent = hRight,
+	})
+	local dot = New("Frame", {
+		Size = UDim2.fromOffset(6, 6),
+		BackgroundColor3 = win.Accent,
+		BorderSizePixel = 0,
+		LayoutOrder = 2,
+		Parent = hRight,
+	})
+	Round(dot)
+	MarkAccent(win, dot, "BackgroundColor3")
+
+	local closeBtn = New("TextButton", {
+		Size = UDim2.fromOffset(L.closeHit, L.closeHit),
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Text = "",
+		LayoutOrder = 3,
+		Parent = hRight,
+	})
+	Icon("close", L.closeIcon, Theme.text1, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Parent = closeBtn,
+	})
+
+	--------------------------------- ТЕЛО -------------------------------
+	local bodyH = -(L.headerH + L.footerH)
+	local body = New("Frame", {
+		Size = UDim2.new(1, 0, 1, bodyH),
+		Position = UDim2.fromOffset(0, L.headerH),
+		BackgroundTransparency = 1,
+		Parent = win.Root,
+	})
+
+	-- область контента (рейл разворачивается ПОВЕРХ неё, поэтому ширина фиксирована)
+	local content = New("Frame", {
+		Size = UDim2.new(1, -L.railW, 1, 0),
+		Position = UDim2.fromOffset(L.railW, 0),
+		BackgroundColor3 = Theme.bg1,
+		BorderSizePixel = 0,
+		ZIndex = 1,
+		Parent = body,
+	})
+	Pad(content, L.contentPad, L.contentPad, L.contentPad, L.contentPad)
+
+	win.Search = New("TextBox", {
+		Size = UDim2.new(1, 0, 0, 28),
+		BackgroundColor3 = Theme.bg2,
+		BorderSizePixel = 0,
+		Font = Theme.Font,
+		TextSize = 13,
+		TextColor3 = Theme.text0,
+		PlaceholderColor3 = Theme.text3,
+		PlaceholderText = "Поиск настроек",
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ClearTextOnFocus = false,
+		Text = "",
+		ZIndex = 2,
+		Parent = content,
+	})
+	Corner(win.Search, 6)
+	Stroke(win.Search)
+	Pad(win.Search, 0, 8, 0, 30)
+	-- Иконка лежит рядом с полем, а не внутри него: UIPadding поля сдвигает
+	-- и текст, и своих детей, из-за чего иконка уезжала поверх плейсхолдера.
+	Icon("search", 14, Theme.text2, {
+		Position = UDim2.fromOffset(9, 7),
+		ZIndex = 3,
+		Parent = content,
+	})
+
+	local pages = New("Frame", {
+		Size = UDim2.new(1, 0, 1, -(28 + L.contentGap)),
+		Position = UDim2.fromOffset(0, 28 + L.contentGap),
+		BackgroundTransparency = 1,
+		ZIndex = 2,
+		Parent = content,
+	})
+
+	-- затемнение поверх контента при открытом рейле
+	win.Dim = New("TextButton", {
+		Size = UDim2.new(1, L.contentPad * 2, 1, L.contentPad * 2),
+		Position = UDim2.fromOffset(-L.contentPad, -L.contentPad),
+		BackgroundColor3 = Theme.dim,
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Text = "",
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 50,
+		Parent = content,
+	})
+
+	--------------------------------- РЕЙЛ -------------------------------
+	local rail = New("Frame", {
+		Size = UDim2.new(0, L.railW, 1, 0),
+		BackgroundColor3 = Theme.bg0,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		ZIndex = 5,
+		Parent = body,
+	})
+	win.Rail = rail
+	win.RailLine = New("Frame", { -- правая линия, видна в развёрнутом виде
+		Size = UDim2.new(0, 1, 1, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 0),
+		BackgroundColor3 = Theme.stroke,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 5,
+		Parent = rail,
+	})
+
+	local railItems = New("Frame", {
+		Size = UDim2.new(1, 0, 1, -(L.railBottomH + L.railTop)),
+		Position = UDim2.fromOffset(0, L.railTop),
+		BackgroundTransparency = 1,
+		ZIndex = 5,
+		Parent = rail,
+	})
+	ListLayout(railItems, Enum.FillDirection.Vertical, 0)
+	win._railItems = railItems
+
+	if L.railBottomH > 0 then
+		local bottom = New("TextButton", {
+			Size = UDim2.new(1, 0, 0, L.railBottomH),
+			Position = UDim2.new(0, 0, 1, -L.railBottomH),
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Text = "",
+			ZIndex = 5,
+			Parent = rail,
+		})
+		New("Frame", {
+			Size = UDim2.new(1, 0, 0, 1),
+			BackgroundColor3 = Theme.stroke,
+			BorderSizePixel = 0,
+			ZIndex = 5,
+			Parent = bottom,
+		})
+		win.RailToggleIcon = Icon("expand", 16, Theme.text2, {
+			Position = UDim2.fromOffset(24, (L.railBottomH - 16) / 2),
+			ZIndex = 5,
+			Parent = bottom,
+		})
+		win.RailToggleBtn = bottom
+	end
+
+	-------------------------------- ФУТЕР -------------------------------
+	local footer = New("Frame", {
+		Size = UDim2.new(1, 0, 0, L.footerH),
+		Position = UDim2.new(0, 0, 1, -L.footerH),
+		BackgroundColor3 = Theme.bg0,
+		BorderSizePixel = 0,
+		Parent = win.Root,
+	})
+	New("Frame", {
+		Size = UDim2.new(1, 0, 0, 1),
+		BackgroundColor3 = Theme.stroke,
+		BorderSizePixel = 0,
+		Parent = footer,
+	})
+
+	local fLeft = New("Frame", {
+		Size = UDim2.new(0, 200, 1, 0),
+		Position = UDim2.fromOffset(L.headerPad, 0),
+		BackgroundTransparency = 1,
+		Parent = footer,
+	})
+	ListLayout(fLeft, Enum.FillDirection.Horizontal, 10,
+		Enum.HorizontalAlignment.Left, Enum.VerticalAlignment.Center)
+
+	win.FpsLabel = New("TextLabel", {
+		Size = UDim2.new(0, 0, 0, 13),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+		Font = Theme.Font, TextSize = 11, TextColor3 = Theme.text2,
+		Text = "0 FPS", LayoutOrder = 1, Parent = fLeft,
+	})
+	local fdot = New("Frame", {
+		Size = UDim2.fromOffset(2, 2),
+		BackgroundColor3 = Theme.stroke, BorderSizePixel = 0,
+		LayoutOrder = 2, Parent = fLeft,
+	})
+	Corner(fdot, 1)
+	win.MsLabel = New("TextLabel", {
+		Size = UDim2.new(0, 0, 0, 13),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+		Font = Theme.Font, TextSize = 11, TextColor3 = Theme.text2,
+		Text = "0 ms", LayoutOrder = 3, Parent = fLeft,
+	})
+
+	win.HintLabel = New("TextLabel", {
+		Size = UDim2.new(0, 0, 1, 0),
+		AutomaticSize = Enum.AutomaticSize.X,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -L.headerPad, 0, 0),
+		BackgroundTransparency = 1,
+		Font = Theme.Font, TextSize = 11, TextColor3 = Theme.text3,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Text = win.ToggleKey.Name .. " — открыть/закрыть",
+		Parent = footer,
+	})
+
+	------------------------------ ВАТЕРМАРК -----------------------------
+	local wm = New("Frame", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -12, 0, 12),
+		Size = UDim2.fromOffset(0, 0),
+		AutomaticSize = Enum.AutomaticSize.XY,
+		BackgroundColor3 = Theme.bg2,
+		BorderSizePixel = 0,
+		Visible = false,
+		Parent = win.Gui,
+	})
+	Corner(wm, win.Radius)
+	Stroke(wm)
+	Pad(wm, 6, 10, 6, 10)
+	ListLayout(wm, Enum.FillDirection.Horizontal, 8,
+		Enum.HorizontalAlignment.Left, Enum.VerticalAlignment.Center)
+	-- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ: промежуток между элементами ватермарка (взято 8).
+
+	local function wmSep(order)
+		return New("Frame", {
+			Size = UDim2.fromOffset(1, 12),
+			BackgroundColor3 = Theme.stroke, BorderSizePixel = 0,
+			LayoutOrder = order, Parent = wm,
+		})
+	end
+	win.WmName = New("TextLabel", {
+		Size = UDim2.new(0, 0, 0, 17), AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1, Font = Theme.FontMedium, TextSize = 13,
+		TextColor3 = Theme.text0, Text = win.Name, LayoutOrder = 1, Parent = wm,
+	})
+	wmSep(2)
+	win.WmFps = New("TextLabel", {
+		Size = UDim2.new(0, 0, 0, 14), AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1, Font = Theme.Font, TextSize = 11,
+		TextColor3 = Theme.text1, Text = "0 FPS", LayoutOrder = 3, Parent = wm,
+	})
+	wmSep(4)
+	win.WmMs = New("TextLabel", {
+		Size = UDim2.new(0, 0, 0, 14), AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1, Font = Theme.Font, TextSize = 11,
+		TextColor3 = Theme.text1, Text = "0 ms", LayoutOrder = 5, Parent = wm,
+	})
+	win.Watermark = wm
+
+	--------------------------- ВНУТРЕННЕЕ ПОВЕДЕНИЕ ---------------------
+
+	win._pages = pages
+	win.Content = content
+
+	-- логотип
+	win:SetLogo(win.LogoValue)
+
+	-- FPS / мс
+	local frames, elapsed = 0, 0
+	Connect(RunService.RenderStepped, function(dt)
+		frames += 1
+		elapsed += dt
+		if elapsed >= 0.5 then
+			local fps = math.floor(frames / elapsed + 0.5)
+			local ms = math.floor(elapsed / math.max(frames, 1) * 1000 + 0.5)
+			win.FpsLabel.Text = fps .. " FPS"
+			win.MsLabel.Text = ms .. " ms"
+			win.WmFps.Text = fps .. " FPS"
+			win.WmMs.Text = ms .. " ms"
+			frames, elapsed = 0, 0
+		end
+	end)
+
+	-- закрытие
+	Connect(closeBtn.MouseButton1Click, function() win:Toggle() end)
+
+	-- горячая клавиша
+	Connect(UserInputService.InputBegan, function(i)
+		if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+		if i.KeyCode ~= win.ToggleKey then return end
+		if UserInputService:GetFocusedTextBox() ~= nil then return end
+		win:Toggle()
+	end)
+
+	-- перетаскивание за шапку, с ограничением по экрану
+	do
+		local dragging, startPos, startCenter = false, nil, nil
+		Connect(header.InputBegan, function(i)
+			if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+				dragging = true
+				startPos = i.Position
+				startCenter = win.Root.AbsolutePosition + win.Root.AbsoluteSize / 2
+			end
+		end)
+		Connect(UserInputService.InputChanged, function(i)
+			if not dragging then return end
+			if i.UserInputType ~= Enum.UserInputType.MouseMovement
+			and i.UserInputType ~= Enum.UserInputType.Touch then return end
+			local delta = i.Position - startPos
+			local screen = win.Gui.AbsoluteSize
+			local half = win.Root.AbsoluteSize / 2
+			local cx = Clamp(startCenter.X + delta.X, half.X, math.max(half.X, screen.X - half.X))
+			local cy = Clamp(startCenter.Y + delta.Y, half.Y, math.max(half.Y, screen.Y - half.Y))
+			win.Root.Position = UDim2.fromOffset(cx, cy)
+		end)
+		Connect(UserInputService.InputEnded, function(i)
+			if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+				dragging = false
+			end
+		end)
+	end
+
+	-- рейл: разворот / сворачивание
+	if win.RailToggleBtn then
+		Connect(win.RailToggleBtn.MouseButton1Click, function() win:ToggleRail() end)
+	end
+	Connect(win.Dim.InputBegan, function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+		or i.UserInputType == Enum.UserInputType.Touch then
+			win:ToggleRail(false)
+		end
+	end)
+
+	-- поиск
+	Connect(win.Search:GetPropertyChangedSignal("Text"), function() win:_ApplySearch() end)
+
+	table.insert(Library._windows, win)
+	return win
+end
+
+--=========================== МЕТОДЫ ОКНА ==============================
+
+function Window:_ApplySearch()
+	local tab = self.ActiveTab
+	if not tab or not tab._cards then return end
+	local q = string.lower(self.Search.Text)
+	for _, card in ipairs(tab._cards) do
+		local any = false
+		for _, row in ipairs(card._rows) do
+			local match = (q == "") or (string.find(string.lower(row.Text), q, 1, true) ~= nil)
+			row.Frame.Visible = row.UserVisible and match
+			if row.Frame.Visible then any = true end
+		end
+		card.Frame.Visible = any
+	end
+end
+
+function Window:SetLogo(assetId)
+	self.LogoValue = assetId or ""
+	if not self.LogoSlot then return end -- на мобильной раскладке слота нет
+	for _, c in ipairs(self.LogoSlot:GetChildren()) do
+		if c:IsA("TextLabel") or c:IsA("ImageLabel") then c:Destroy() end
+	end
+	if self.LogoValue ~= "" then
+		local img = New("ImageLabel", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			ScaleType = Enum.ScaleType.Fit,
+			Image = self.LogoValue, -- подставляется как есть
+			Parent = self.LogoSlot,
+		})
+		Corner(img, 6)
+	else
+		local letter = self.LogoText
+		if letter == "" or letter == nil then
+			-- первая буква Name; string.sub взял бы один байт и разрезал кириллицу
+			letter = ""
+			for _, c in utf8.codes(self.Name) do
+				letter = utf8.char(c)
+				break
+			end
+		end
+		local lbl = New("TextLabel", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Font = Theme.FontBold,
+			TextSize = 11,
+			TextColor3 = self.Accent,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextYAlignment = Enum.TextYAlignment.Center,
+			Text = Upper(letter),
+			Parent = self.LogoSlot,
+		})
+		MarkAccent(self, lbl, "TextColor3")
+	end
+end
+
+function Window:SetName(name, version)
+	self.Name = name or self.Name
+	self.Version = version or self.Version
+	if self.NameLabel then self.NameLabel.Text = self.Name end
+	if self.VerLabel then self.VerLabel.Text = self.Version end
+	self.WmName.Text = self.Name
+	if self.LogoValue == "" then self:SetLogo("") end
+end
+
+function Window:SetAccent(color)
+	self.Accent = color
+	for _, e in ipairs(self._accent) do
+		if e.inst.Parent then e.inst[e.prop] = color end
+	end
+end
+
+function Window:SetWatermark(state)
+	-- В спецификации метода нет, но ватермарк требуется включать отдельно от панели.
+	self.Watermark.Visible = state and true or false
+end
+
+------------------------------ ВКЛАДКИ --------------------------------
+
+local function GetGroup(win, name)
+	for _, g in ipairs(win._groups) do
+		if g.Name == name then return g end
+	end
+	local index = #win._groups + 1
+	local g = { Name = name, Index = index, Count = 0 }
+
+	g.Separator = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 17), -- 8 + линия 1 + 8
+		BackgroundTransparency = 1,
+		LayoutOrder = index * 1000 - 1,
+		Visible = (index > 1) and not win.RailOpen,
+		ZIndex = 5,
+		Parent = win._railItems,
+	})
+	New("Frame", {
+		Size = UDim2.fromOffset(24, 1),
+		Position = UDim2.fromOffset(20, 8),
+		BackgroundColor3 = Theme.stroke,
+		BorderSizePixel = 0,
+		ZIndex = 5,
+		Parent = g.Separator,
+	})
+
+	g.Header = New("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 22),
+		BackgroundTransparency = 1,
+		Font = Theme.FontMedium,
+		TextSize = 11,
+		TextColor3 = Theme.text3,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTransparency = win.RailOpen and 0 or 1,
+		Text = Spaced(Upper(name)),
+		LayoutOrder = index * 1000,
+		Visible = win.RailOpen,
+		ZIndex = 5,
+		Parent = win._railItems,
+	})
+	Pad(g.Header, 5, 0, 0, 24)
+
+	table.insert(win._groups, g)
+	return g
+end
+
+function Window:AddTab(o)
+	o = o or {}
+	local win = self
+	local group = GetGroup(win, o.Group or "")
+	group.Count += 1
+
+	local tab = setmetatable({
+		_win = win, Name = o.Name, _cards = {}, _columns = {},
+	}, Tab)
+
+	------------------------------ пункт рейла ---------------------------
+	local item = New("TextButton", {
+		Size = UDim2.new(1, 0, 0, L.railItemH),
+		BackgroundColor3 = Theme.bg2,
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Text = "",
+		BorderSizePixel = 0,
+		LayoutOrder = group.Index * 1000 + group.Count,
+		ZIndex = 5,
+		Parent = win._railItems,
+	})
+
+	local bar = New("Frame", {
+		Size = UDim2.new(0, 2, 1, -12),
+		Position = UDim2.fromOffset(0, 6),
+		BackgroundColor3 = win.Accent,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 5,
+		Parent = item,
+	})
+	Corner(bar, 1)
+	MarkAccent(win, bar, "BackgroundColor3")
+
+	-- иконка стоит на x=24 в обоих состояниях рейла и не двигается при анимации
+	local iconX = isMobile and math.floor((L.railW - L.railIcon) / 2) or 24
+	local icon = Icon(o.Icon or "", L.railIcon, Theme.text2, {
+		Position = UDim2.fromOffset(iconX, math.floor((L.railItemH - L.railIcon) / 2)),
+		ZIndex = 5,
+		Parent = item,
+	})
+
+	local label = New("TextLabel", {
+		Size = UDim2.new(1, -56, 0, 16),
+		Position = UDim2.fromOffset(56, math.floor((L.railItemH - 16) / 2)),
+		BackgroundTransparency = 1,
+		Font = Theme.Font,
+		TextSize = 13,
+		TextColor3 = Theme.text1,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTransparency = win.RailOpen and 0 or 1,
+		Text = o.Name or "",
+		ZIndex = 5,
+		Parent = item,
+	})
+
+	tab.RailItem, tab.RailIcon, tab.RailLabel, tab.RailBar = item, icon, label, bar
+
+	------------------------------- страница -----------------------------
+	local page = New("ScrollingFrame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 2, -- НЕ ЗАДАНО В СПЕЦИФИКАЦИИ
+		ScrollBarImageColor3 = Theme.stroke,
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Visible = false,
+		ZIndex = 2,
+		Parent = win._pages,
+	})
+	tab.Page = page
+
+	if o.Type == "Configs" then
+		tab.IsConfigs = true
+		win:_BuildConfigsPage(tab)
+	else
+		local colW = (L.columns == 1) and UDim2.new(1, 0, 0, 0)
+			or UDim2.new(0.5, -L.gridGap / 2, 0, 0)
+		for c = 1, L.columns do
+			local col = New("Frame", {
+				Size = colW,
+				AutomaticSize = Enum.AutomaticSize.Y,
+				Position = (c == 1) and UDim2.new()
+					or UDim2.new(0.5, L.gridGap / 2, 0, 0),
+				BackgroundTransparency = 1,
+				ZIndex = 2,
+				Parent = page,
+			})
+			ListLayout(col, Enum.FillDirection.Vertical, L.gridGap)
+			table.insert(tab._columns, col)
+		end
+	end
+
+	--------------------------- поведение пункта -------------------------
+	Connect(item.MouseEnter, function()
+		if win.ActiveTab ~= tab then
+			Tween(item, { BackgroundTransparency = 0 }, 0.12)
+		end
+	end)
+	Connect(item.MouseLeave, function()
+		if win.ActiveTab ~= tab then
+			Tween(item, { BackgroundTransparency = 1 }, 0.12)
+		end
+	end)
+	Connect(item.MouseButton1Click, function() win:SelectTab(tab) end)
+
+	table.insert(win._tabs, tab)
+	if not win.ActiveTab then win:SelectTab(tab) end
+	return tab
+end
+
+function Window:SelectTab(tab)
+	for _, t in ipairs(self._tabs) do
+		local active = (t == tab)
+		t.Page.Visible = active
+		t.RailItem.BackgroundTransparency = active and 0 or 1
+		t.RailBar.Visible = active
+		t.RailLabel.TextColor3 = active and Theme.text0 or Theme.text1
+		t.RailLabel.Font = active and Theme.FontMedium or Theme.Font
+		IconColor(t.RailIcon, active and Theme.text0 or Theme.text2)
+	end
+	self.ActiveTab = tab
+	self:_ApplySearch()
+end
+
+--------------------------- ВКЛАДКА CONFIGS ---------------------------
+
+function Window:_BuildConfigsPage(tab)
+	local win = self
+	local page = tab.Page
+
+	local top = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 28),
+		BackgroundTransparency = 1,
+		ZIndex = 2,
+		Parent = page,
+	})
+
+	local saveBtn = New("TextButton", {
+		Size = UDim2.fromOffset(0, 28),
+		AutomaticSize = Enum.AutomaticSize.X,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 0),
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Font = Theme.Font, TextSize = 13, TextColor3 = win.Accent,
+		Text = "Сохранить",
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = top,
+	})
+	Corner(saveBtn, 6)
+	Pad(saveBtn, 0, 12, 0, 12)
+	local sbStroke = Stroke(saveBtn, win.Accent)
+	MarkAccent(win, saveBtn, "TextColor3")
+	MarkAccent(win, sbStroke, "Color")
+
+	local nameFrame = New("Frame", {
+		Size = UDim2.new(1, -(saveBtn.AbsoluteSize.X + 8), 0, 28),
+		BackgroundColor3 = Theme.bg2,
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = top,
+	})
+	Corner(nameFrame, 6)
+	Stroke(nameFrame)
+	-- ширина поля пересчитывается, когда кнопка получит размер
+	Connect(saveBtn:GetPropertyChangedSignal("AbsoluteSize"), function()
+		nameFrame.Size = UDim2.new(1, -(saveBtn.AbsoluteSize.X + 8), 0, 28)
+	end)
+
+	local nameBox = New("TextBox", {
+		Size = UDim2.new(1, -16, 1, 0),
+		Position = UDim2.fromOffset(8, 0),
+		BackgroundTransparency = 1,
+		Font = Theme.Font, TextSize = 13,
+		TextColor3 = Theme.text0,
+		PlaceholderColor3 = Theme.text3,
+		PlaceholderText = "Название конфига",
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ClearTextOnFocus = false,
+		Text = "",
+		ZIndex = 2,
+		Parent = nameFrame,
+	})
+
+	local listHolder = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Position = UDim2.fromOffset(0, 28 + 8),
+		BackgroundTransparency = 1,
+		ZIndex = 2,
+		Parent = page,
+	})
+	ListLayout(listHolder, Enum.FillDirection.Vertical, 8)
+
+	local function smallButton(parent, text, order, cb)
+		local b = New("TextButton", {
+			Size = UDim2.fromOffset(0, 0),
+			AutomaticSize = Enum.AutomaticSize.XY,
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Font = Theme.Font, TextSize = 11, TextColor3 = Theme.text1,
+			Text = text, BorderSizePixel = 0, LayoutOrder = order,
+			ZIndex = 2, Parent = parent,
+		})
+		Corner(b, 6)
+		Pad(b, 5, 10, 5, 10)
+		Stroke(b, Theme.text3)
+		b.MouseButton1Click:Connect(cb)
+		return b
+	end
+
+	local function redraw()
+		for _, c in ipairs(listHolder:GetChildren()) do
+			if c:IsA("Frame") then c:Destroy() end
+		end
+		for i, entry in ipairs(win.Storage.list()) do
+			local rowF = New("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundColor3 = Theme.bg2,
+				BorderSizePixel = 0,
+				LayoutOrder = i,
+				ZIndex = 2,
+				Parent = listHolder,
+			})
+			Corner(rowF, win.Radius)
+			Stroke(rowF)
+			Pad(rowF, 10, 14, 10, 14)
+
+			local textCol = New("Frame", {
+				Size = UDim2.new(1, -220, 0, 32),
+				BackgroundTransparency = 1,
+				ZIndex = 2, Parent = rowF,
+			})
+			New("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 16),
+				BackgroundTransparency = 1,
+				Font = Theme.FontMedium, TextSize = 13, TextColor3 = Theme.text0,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Text = entry.name, ZIndex = 2, Parent = textCol,
+			})
+			New("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 13),
+				Position = UDim2.fromOffset(0, 18),
+				BackgroundTransparency = 1,
+				Font = Theme.Font, TextSize = 11, TextColor3 = Theme.text2,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Text = entry.date or "", ZIndex = 2, Parent = textCol,
+			})
+
+			local btns = New("Frame", {
+				Size = UDim2.new(0, 210, 0, 32),
+				AnchorPoint = Vector2.new(1, 0),
+				Position = UDim2.new(1, 0, 0, 0),
+				BackgroundTransparency = 1,
+				ZIndex = 2, Parent = rowF,
+			})
+			ListLayout(btns, Enum.FillDirection.Horizontal, 8,
+				Enum.HorizontalAlignment.Right, Enum.VerticalAlignment.Center)
+
+			smallButton(btns, "Load", 1, function()
+				local data = win.Storage.load(entry.name)
+				if type(data) ~= "table" then return end
+				for id, v in pairs(data) do
+					local ctl = win._controls[id]
+					if ctl then ctl:Set(v) end
+				end
+			end)
+			smallButton(btns, "Save", 2, function()
+				local snapshot = {}
+				for id in pairs(win._controls) do snapshot[id] = Library.Flags[id] end
+				win.Storage.save(entry.name, snapshot)
+				redraw()
+			end)
+			smallButton(btns, "Delete", 3, function()
+				win.Storage.delete(entry.name)
+				redraw()
+			end)
+		end
+	end
+
+	Connect(saveBtn.MouseButton1Click, function()
+		local name = nameBox.Text
+		if name == "" then return end
+		local snapshot = {}
+		for id in pairs(win._controls) do snapshot[id] = Library.Flags[id] end
+		win.Storage.save(name, snapshot)
+		nameBox.Text = ""
+		redraw()
+	end)
+
+	redraw()
+end
+
+--------------------------- РЕЙЛ: АНИМАЦИЯ ----------------------------
+
+function Window:ToggleRail(state)
+	if isMobile then return end -- на мобильной раскладке рейл всегда свёрнут
+	if state == nil then state = not self.RailOpen end
+	if state == self.RailOpen then return end
+	self.RailOpen = state
+
+	if state then
+		-- разворот 64 -> 180 за 0.16, подписи с задержкой 0.04, затемнение за 0.12
+		self.RailLine.Visible = true
+		for _, g in ipairs(self._groups) do
+			g.Separator.Visible = false
+			g.Header.Visible = true
+		end
+		Tween(self.Rail, { Size = UDim2.new(0, L.railWExp, 1, 0) }, 0.16)
+		self.Dim.Visible = true
+		Tween(self.Dim, { BackgroundTransparency = 0.55 }, 0.12)
+		task.delay(0.04, function()
+			if not self.RailOpen then return end
+			for _, t in ipairs(self._tabs) do
+				Tween(t.RailLabel, { TextTransparency = 0 }, 0.12)
+			end
+			for _, g in ipairs(self._groups) do
+				Tween(g.Header, { TextTransparency = 0 }, 0.12)
+			end
+		end)
+		if self.RailToggleIcon then
+			IconColor(self.RailToggleIcon, Theme.text2)
+		end
+	else
+		-- сворачивание: подписи гаснут первыми, затем едет ширина
+		for _, t in ipairs(self._tabs) do
+			Tween(t.RailLabel, { TextTransparency = 1 }, 0.06)
+		end
+		for _, g in ipairs(self._groups) do
+			Tween(g.Header, { TextTransparency = 1 }, 0.06)
+		end
+		Tween(self.Dim, { BackgroundTransparency = 1 }, 0.12)
+		task.delay(0.12, function()
+			if self.RailOpen then return end
+			self.Dim.Visible = false
+		end)
+		task.delay(0.06, function()
+			if self.RailOpen then return end
+			Tween(self.Rail, { Size = UDim2.new(0, L.railW, 1, 0) }, 0.14)
+			for i, g in ipairs(self._groups) do
+				g.Header.Visible = false
+				g.Separator.Visible = (i > 1)
+			end
+			task.delay(0.14, function()
+				if not self.RailOpen then self.RailLine.Visible = false end
+			end)
+		end)
+	end
+end
+
+------------------------ ОТКРЫТИЕ / ЗАКРЫТИЕ --------------------------
+
+local function CollectFade(root)
+	local items = {}
+	for i = #FadeList, 1, -1 do
+		local o = FadeList[i]
+		if not o.Parent and o ~= root then
+			table.remove(FadeList, i)
+		elseif o == root or o:IsDescendantOf(root) then
+			if o:IsA("UIStroke") then
+				table.insert(items, { o = o, p = "Transparency", b = o.Transparency })
+			else
+				table.insert(items, { o = o, p = "BackgroundTransparency", b = o.BackgroundTransparency })
+				if o:IsA("TextLabel") or o:IsA("TextBox") or o:IsA("TextButton") then
+					table.insert(items, { o = o, p = "TextTransparency", b = o.TextTransparency })
+				end
+				if o:IsA("ImageLabel") or o:IsA("ImageButton") then
+					table.insert(items, { o = o, p = "ImageTransparency", b = o.ImageTransparency })
+				end
+			end
+		end
+	end
+	return items
+end
+
+function Window:Toggle(state)
+	if state == nil then state = not self.Open end
+	if state == self.Open and self._animVal then return end
+	self.Open = state
+
+	for _, close in ipairs(self._popups) do close() end
+
+	-- если анимация уже идёт — переиспользуем снимок, иначе снимаем текущий
+	if not self._fadeItems then
+		self._fadeItems = CollectFade(self.Root)
+	end
+	local items = self._fadeItems
+
+	if self._animVal then
+		self._animVal:Destroy()
+		self._animVal = nil
+	end
+
+	local nv = Instance.new("NumberValue")
+	nv.Value = state and 0 or 1
+	self._animVal = nv
+
+	local function apply(a)
+		self.Scale.Scale = 0.96 + 0.04 * a
+		for _, it in ipairs(items) do
+			if it.o.Parent then it.o[it.p] = 1 - a * (1 - it.b) end
+		end
+	end
+
+	if state then
+		self.Root.Visible = true
+		apply(0)
+	end
+	nv.Changed:Connect(apply)
+
+	local dur = state and 0.15 or 0.12
+	local dir = state and Enum.EasingDirection.Out or Enum.EasingDirection.In
+	local t = TweenService:Create(nv,
+		TweenInfo.new(dur, Enum.EasingStyle.Quad, dir),
+		{ Value = state and 1 or 0 })
+	t.Completed:Connect(function()
+		if self._animVal ~= nv then return end
+		-- вернуть исходные значения прозрачности и спрятать панель
+		for _, it in ipairs(items) do
+			if it.o.Parent then it.o[it.p] = it.b end
+		end
+		self.Scale.Scale = 1
+		self.Root.Visible = state
+		nv:Destroy()
+		self._animVal = nil
+		self._fadeItems = nil
+	end)
+	t:Play()
+end
+
+function Window:Destroy()
+	if self._animVal then self._animVal:Destroy() self._animVal = nil end
+	if self.PopupGui then self.PopupGui:Destroy() end
+	if self.Gui then self.Gui:Destroy() end
+	for i, w in ipairs(Library._windows) do
+		if w == self then table.remove(Library._windows, i) break end
+	end
+end
+
+function Library:Destroy()
+	for _, c in ipairs(self._connections) do
+		if c.Connected then c:Disconnect() end
+	end
+	table.clear(self._connections)
+	for i = #self._windows, 1, -1 do
+		self._windows[i]:Destroy()
+	end
+	table.clear(self.Flags)
+	table.clear(FadeList)
+end
+
+--=====================================================================
+-- ДЕМО: состав рейла и содержимое карточек — ровно как в макете.
+--=====================================================================
+
+local Win = Library:CreateWindow({
+	Name = "Woarder",
+	Version = "v1.0.4",
+	Logo = "rbxassetid://139933985166637",
+	LogoText = "",
+	Accent = Color3.fromHex("9184d9"),
+	Radius = 8,
+	ToggleKey = Enum.KeyCode.RightControl,
+})
+
+Win:AddTab({ Name = "Aim",      Icon = "aim",      Group = "Модули" })
+local Visuals = Win:AddTab({ Name = "Visuals",  Icon = "eye",      Group = "Модули" })
+Win:AddTab({ Name = "Movement", Icon = "activity", Group = "Модули" })
+Win:AddTab({ Name = "World",    Icon = "globe",    Group = "Модули" })
+Win:AddTab({ Name = "Misc",     Icon = "box",      Group = "Модули" })
+Win:AddTab({ Name = "Configs",  Icon = "folder",   Group = "Приложение", Type = "Configs" })
+Win:AddTab({ Name = "Settings", Icon = "gear",     Group = "Приложение" })
+
+local ESP = Visuals:AddCard({ Name = "ESP" })
+ESP:AddToggle({   Name = "Player Boxes",   Default = true, Callback = function(v) end })
+ESP:AddDropdown({ Name = "Стиль обводки",  Options = { "2D", "3D" }, Default = "2D", Callback = function(v) end })
+
+local Chams = Visuals:AddCard({ Name = "Chams" })
+Chams:AddSlider({ Name = "Прозрачность", Min = 0, Max = 100, Default = 65, Callback = function(v) end })
+
+Win:SelectTab(Visuals)
+Win:SetWatermark(true)
+
+return Library
