@@ -45,6 +45,11 @@ local Config = {
 	Radius    = 8,        -- диапазон 2..14
 	ToggleKey = Enum.KeyCode.RightControl,
 
+	-- Плавающая кнопка-ярлык: на тач-устройствах панель иначе не открыть,
+	-- клавиши RightControl там нет.
+	-- Enabled: "auto" — только на тач-устройствах, true — всегда, false — никогда.
+	Launcher = { Enabled = "auto", Size = 44, Position = nil },
+
 	-- Абстракция хранилища конфигов. По умолчанию — обычная таблица в памяти.
 	Storage = nil,
 }
@@ -176,13 +181,6 @@ local function Upper(s)
 		table.insert(out, utf8.char(c))
 	end
 	return string.upper(table.concat(out))
-end
-
--- Имитация увеличенного межбуквенного интервала: в Roblox его нет, вставляем пробелы.
-local function Spaced(s)
-	local out = {}
-	for _, c in utf8.codes(s) do table.insert(out, utf8.char(c)) end
-	return table.concat(out, " ")
 end
 
 -- Иконка: картинка, если assetId задан, иначе квадрат-заглушка цвета иконки.
@@ -816,6 +814,11 @@ Window.__index = Window
 local function AddRow(win, card, labelText, secondary)
 	local row = { Height = L.rowH, UserVisible = true, Text = labelText or "" }
 
+	-- учёт высоты для балансировки колонок
+	if card._tab then
+		card._tab._colH[card._col] = card._tab._colH[card._col] + L.rowH + L.cardRowGap
+	end
+
 	row.Frame = New("Frame", {
 		Size = UDim2.new(1, 0, 0, L.rowH),
 		BackgroundTransparency = 1,
@@ -865,9 +868,16 @@ Tab.__index = Tab
 
 function Tab:AddCard(opts)
 	local win = self._win
-	local col = self._columns[(#self._cards % L.columns) + 1]
 
-	local card = setmetatable({ _win = win, _rows = {} }, Card)
+	-- Кладём карточку в колонку, которая сейчас ниже. AbsoluteSize колонок
+	-- обновляется только на следующем кадре, поэтому высоту считаем сами:
+	-- паддинги + заголовок, дальше AddRow прибавляет свои строки.
+	local idx = 1
+	if L.columns > 1 and self._colH[2] < self._colH[1] then idx = 2 end
+	local col = self._columns[idx]
+	self._colH[idx] = self._colH[idx] + L.cardPad * 2 + 16 + L.gridGap
+
+	local card = setmetatable({ _win = win, _rows = {}, _tab = self, _col = idx }, Card)
 	card.Frame = New("Frame", {
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
@@ -1300,13 +1310,106 @@ function Library:CreateWindow(o)
 	})
 	win.Watermark = wm
 
+	------------------------------- ЯРЛЫК --------------------------------
+	do
+		local lc = Config.Launcher
+		local size = lc.Size or 44
+		win._launcherConns = {}
+		win._launcherShown = false
+		win._launcherAllowed = (lc.Enabled == true)
+			or (lc.Enabled == "auto" and isMobile)
+
+		win.LauncherGui = New("ScreenGui", {
+			Name = "WoarderLauncher",
+			ResetOnSpawn = false,
+			IgnoreGuiInset = true,
+			ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+			DisplayOrder = Config.DisplayOrder + 1,
+			Parent = parent,
+		})
+
+		-- CanvasGroup, чтобы появление/исчезновение шло одним GroupTransparency
+		win.LauncherRoot = New("CanvasGroup", {
+			GroupTransparency = 1,
+			Size = UDim2.fromOffset(size, size),
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = lc.Position or UDim2.new(1, -12, 0.5, 0),
+			BackgroundColor3 = Theme.bg2,
+			BorderSizePixel = 0,
+			Visible = false,
+			Parent = win.LauncherGui,
+		})
+		Corner(win.LauncherRoot, win.Radius)
+		Stroke(win.LauncherRoot)
+		win.LauncherScale = New("UIScale", { Scale = 0.9, Parent = win.LauncherRoot })
+
+		win.LauncherBtn = New("TextButton", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Text = "",
+			Parent = win.LauncherRoot,
+		})
+
+		local function LConnect(signal, fn)
+			local c = Connect(signal, fn)
+			table.insert(win._launcherConns, c)
+			return c
+		end
+
+		local dragging, moved, startPos, startTL = false, false, nil, nil
+
+		local function press(down)
+			Tween(win.LauncherRoot, { BackgroundColor3 = down and Theme.bg1 or Theme.bg2 }, 0.12)
+		end
+
+		LConnect(win.LauncherBtn.InputBegan, function(i)
+			if i.UserInputType ~= Enum.UserInputType.MouseButton1
+			and i.UserInputType ~= Enum.UserInputType.Touch then return end
+			dragging, moved = true, false
+			startPos = i.Position
+			startTL = win.LauncherRoot.AbsolutePosition
+			press(true)
+		end)
+
+		LConnect(UserInputService.InputChanged, function(i)
+			if not dragging then return end
+			if i.UserInputType ~= Enum.UserInputType.MouseMovement
+			and i.UserInputType ~= Enum.UserInputType.Touch then return end
+			local delta = i.Position - startPos
+			-- смещение больше 8px — это перетаскивание, а не тап
+			if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then moved = true end
+			if not moved then return end
+			local screen = win.LauncherGui.AbsoluteSize
+			local sz = win.LauncherRoot.AbsoluteSize
+			local x = Clamp(startTL.X + delta.X, 0, math.max(0, screen.X - sz.X))
+			local y = Clamp(startTL.Y + delta.Y, 0, math.max(0, screen.Y - sz.Y))
+			-- AnchorPoint (1, 0.5): в Position идёт правый край и центр по высоте
+			win.LauncherRoot.Position = UDim2.fromOffset(x + sz.X, y + sz.Y / 2)
+		end)
+
+		LConnect(UserInputService.InputEnded, function(i)
+			if not dragging then return end
+			if i.UserInputType ~= Enum.UserInputType.MouseButton1
+			and i.UserInputType ~= Enum.UserInputType.Touch then return end
+			dragging = false
+			press(false)
+			if moved then
+				Config.Launcher.Position = win.LauncherRoot.Position -- держим на сессию
+			else
+				win:Toggle(true)
+			end
+		end)
+	end
+
 	--------------------------- ВНУТРЕННЕЕ ПОВЕДЕНИЕ ---------------------
 
 	win._pages = pages
 	win.Content = content
 
-	-- логотип
+	-- логотип (заполняет и слот в шапке, и ярлык)
 	win:SetLogo(win.LogoValue)
+	win:_UpdateLauncher()
 
 	-- FPS / мс
 	local frames, elapsed = 0, 0
@@ -1405,42 +1508,107 @@ end
 
 function Window:SetLogo(assetId)
 	self.LogoValue = assetId or ""
-	if not self.LogoSlot then return end -- на мобильной раскладке слота нет
-	for _, c in ipairs(self.LogoSlot:GetChildren()) do
-		if c:IsA("TextLabel") or c:IsA("ImageLabel") then c:Destroy() end
-	end
-	if self.LogoValue ~= "" then
-		local img = New("ImageLabel", {
-			Size = UDim2.fromScale(1, 1),
-			BackgroundTransparency = 1,
-			ScaleType = Enum.ScaleType.Fit,
-			Image = self.LogoValue, -- подставляется как есть
-			Parent = self.LogoSlot,
-		})
-		Corner(img, 6)
-	else
-		local letter = self.LogoText
-		if letter == "" or letter == nil then
-			-- первая буква Name; string.sub взял бы один байт и разрезал кириллицу
-			letter = ""
-			for _, c in utf8.codes(self.Name) do
-				letter = utf8.char(c)
-				break
-			end
+
+	local letter = self.LogoText
+	if letter == "" or letter == nil then
+		-- первая буква Name; string.sub взял бы один байт и разрезал кириллицу
+		letter = ""
+		for _, c in utf8.codes(self.Name) do
+			letter = utf8.char(c)
+			break
 		end
-		local lbl = New("TextLabel", {
-			Size = UDim2.fromScale(1, 1),
-			BackgroundTransparency = 1,
-			Font = Theme.FontBold,
-			TextSize = 11,
-			TextColor3 = self.Accent,
-			TextXAlignment = Enum.TextXAlignment.Center,
-			TextYAlignment = Enum.TextYAlignment.Center,
-			Text = Upper(letter),
-			Parent = self.LogoSlot,
-		})
-		MarkAccent(self, lbl, "TextColor3")
 	end
+	letter = Upper(letter)
+
+	local function clear(holder)
+		for _, c in ipairs(holder:GetChildren()) do
+			if c:IsA("TextLabel") or c:IsA("ImageLabel") then c:Destroy() end
+		end
+	end
+
+	-- слот 24x24 в шапке (на мобильной раскладке его нет)
+	if self.LogoSlot then
+		clear(self.LogoSlot)
+		if self.LogoValue ~= "" then
+			local img = New("ImageLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				ScaleType = Enum.ScaleType.Fit,
+				Image = self.LogoValue, -- подставляется как есть
+				Parent = self.LogoSlot,
+			})
+			Corner(img, 6)
+		else
+			local lbl = New("TextLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Font = Theme.FontBold,
+				TextSize = 11,
+				TextColor3 = self.Accent,
+				TextXAlignment = Enum.TextXAlignment.Center,
+				TextYAlignment = Enum.TextYAlignment.Center,
+				Text = letter,
+				Parent = self.LogoSlot,
+			})
+			MarkAccent(self, lbl, "TextColor3")
+		end
+	end
+
+	-- ярлык: те же правила, но буква 13px и картинка 24x24 по центру
+	if self.LauncherRoot then
+		clear(self.LauncherRoot)
+		if self.LogoValue ~= "" then
+			New("ImageLabel", {
+				Size = UDim2.fromOffset(24, 24),
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				BackgroundTransparency = 1,
+				ScaleType = Enum.ScaleType.Fit,
+				Image = self.LogoValue,
+				Parent = self.LauncherRoot,
+			})
+		else
+			local lbl = New("TextLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Font = Theme.FontBold,
+				TextSize = 13,
+				TextColor3 = self.Accent,
+				TextXAlignment = Enum.TextXAlignment.Center,
+				TextYAlignment = Enum.TextYAlignment.Center,
+				Text = letter,
+				Parent = self.LauncherRoot,
+			})
+			MarkAccent(self, lbl, "TextColor3")
+		end
+	end
+end
+
+-- Ярлык виден, когда он разрешён и панель закрыта.
+function Window:_UpdateLauncher()
+	if not self.LauncherRoot then return end
+	local want = self._launcherAllowed and not self.Open
+	if want == self._launcherShown then return end
+	self._launcherShown = want
+
+	if want then
+		self.LauncherRoot.Visible = true
+		self.LauncherRoot.GroupTransparency = 1
+		self.LauncherScale.Scale = 0.9
+		Tween(self.LauncherRoot, { GroupTransparency = 0 }, 0.12)
+		Tween(self.LauncherScale, { Scale = 1 }, 0.12)
+	else
+		Tween(self.LauncherRoot, { GroupTransparency = 1 }, 0.12)
+		Tween(self.LauncherScale, { Scale = 0.9 }, 0.12)
+		task.delay(0.12, function()
+			if not self._launcherShown then self.LauncherRoot.Visible = false end
+		end)
+	end
+end
+
+function Window:SetLauncherVisible(state)
+	self._launcherAllowed = state and true or false
+	self:_UpdateLauncher()
 end
 
 function Window:SetName(name, version)
@@ -1498,7 +1666,9 @@ local function GetGroup(win, name)
 		TextColor3 = Theme.text3,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTransparency = win.RailOpen and 0 or 1,
-		Text = Spaced(Upper(name)),
+		-- увеличенный межбуквенный интервал из макета в Roblox не
+		-- воспроизводится: свойства letter-spacing нет, RichText его не даёт
+		Text = Upper(name),
 		LayoutOrder = index * 1000,
 		Visible = win.RailOpen,
 		ZIndex = 5,
@@ -1517,7 +1687,7 @@ function Window:AddTab(o)
 	group.Count += 1
 
 	local tab = setmetatable({
-		_win = win, Name = o.Name, _cards = {}, _columns = {},
+		_win = win, Name = o.Name, _cards = {}, _columns = {}, _colH = { 0, 0 },
 	}, Tab)
 
 	------------------------------ пункт рейла ---------------------------
@@ -1885,6 +2055,7 @@ function Window:Toggle(state)
 	self.Open = state
 
 	CloseActiveDropdown()
+	self:_UpdateLauncher()
 
 	if self._animTween then self._animTween:Cancel() self._animTween = nil end
 	if self._scaleTween then self._scaleTween:Cancel() self._scaleTween = nil end
@@ -1918,6 +2089,11 @@ end
 function Window:Destroy()
 	if self._animTween then self._animTween:Cancel() self._animTween = nil end
 	if self._scaleTween then self._scaleTween:Cancel() self._scaleTween = nil end
+	for _, c in ipairs(self._launcherConns or {}) do
+		if c.Connected then c:Disconnect() end
+	end
+	self._launcherConns = nil
+	if self.LauncherGui then self.LauncherGui:Destroy() self.LauncherGui = nil end
 	if self.PopupGui then self.PopupGui:Destroy() end
 	if self.Gui then self.Gui:Destroy() end
 	for i, w in ipairs(Library._windows) do
