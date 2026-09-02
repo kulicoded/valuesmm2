@@ -48,7 +48,7 @@ local Config = {
 	-- Плавающая кнопка-ярлык: на тач-устройствах панель иначе не открыть,
 	-- клавиши RightControl там нет.
 	-- Enabled: "auto" — только на тач-устройствах, true — всегда, false — никогда.
-	Launcher = { Enabled = "auto", Size = 44, Position = nil },
+	Launcher = { Enabled = true, Size = 44, Position = nil },
 
 	-- Абстракция хранилища конфигов. По умолчанию — обычная таблица в памяти.
 	Storage = nil,
@@ -2131,6 +2131,7 @@ local Win = Library:CreateWindow({
 	Accent = Color3.fromHex("9184d9"),
 	Radius = 8,
 	ToggleKey = Enum.KeyCode.RightControl,
+	Launcher = { Enabled = true },
 })
 
 Win:AddTab({ Name = "Aim",      Icon = "aim",      Group = "Модули" })
