@@ -48,7 +48,7 @@ local Config = {
 	-- Плавающая кнопка-ярлык: на тач-устройствах панель иначе не открыть,
 	-- клавиши RightControl там нет.
 	-- Enabled: "auto" — только на тач-устройствах, true — всегда, false — никогда.
-	Launcher = { Enabled = true, Size = 44, Position = nil },
+	Launcher = { Enabled = "auto", Size = 44, Position = nil },
 
 	-- Абстракция хранилища конфигов. По умолчанию — обычная таблица в памяти.
 	Storage = nil,
@@ -1312,12 +1312,18 @@ function Library:CreateWindow(o)
 
 	------------------------------- ЯРЛЫК --------------------------------
 	do
-		local lc = Config.Launcher
-		local size = lc.Size or 44
+		-- Launcher можно задать и в Config, и в опциях окна; опции главнее.
+		local lc = o.Launcher or {}
+		local def = Config.Launcher or {}
+		local enabled = lc.Enabled
+		if enabled == nil then enabled = def.Enabled end
+		local size = lc.Size or def.Size or 44
+		local startPos = lc.Position or def.Position
+
 		win._launcherConns = {}
 		win._launcherShown = false
-		win._launcherAllowed = (lc.Enabled == true)
-			or (lc.Enabled == "auto" and isMobile)
+		win._launcherAllowed = (enabled == true)
+			or (enabled == "auto" and isMobile)
 
 		win.LauncherGui = New("ScreenGui", {
 			Name = "WoarderLauncher",
@@ -1333,7 +1339,7 @@ function Library:CreateWindow(o)
 			GroupTransparency = 1,
 			Size = UDim2.fromOffset(size, size),
 			AnchorPoint = Vector2.new(1, 0.5),
-			Position = lc.Position or UDim2.new(1, -12, 0.5, 0),
+			Position = startPos or UDim2.new(1, -12, 0.5, 0),
 			BackgroundColor3 = Theme.bg2,
 			BorderSizePixel = 0,
 			Visible = false,
