@@ -39,7 +39,7 @@ local Config = {
 
 	Name      = "NAME",
 	Version   = "v1.0.4",
-	Logo      = "",
+	Logo      = "139933985166637",
 	LogoText  = "",
 	Accent    = Theme.accent,
 	Radius    = 8,        -- диапазон 2..14
@@ -48,7 +48,7 @@ local Config = {
 	-- Плавающая кнопка-ярлык: на тач-устройствах панель иначе не открыть,
 	-- клавиши RightControl там нет.
 	-- Enabled: "auto" — только на тач-устройствах, true — всегда, false — никогда.
-	Launcher = { Enabled = true, Size = 44, Position = nil },
+	Launcher = { Enabled = "auto", Size = 44, Position = nil },
 
 	-- Абстракция хранилища конфигов. По умолчанию — обычная таблица в памяти.
 	Storage = nil,
@@ -56,8 +56,8 @@ local Config = {
 
 -- Иконки заполняет пользователь библиотеки. Пустая строка -> рисуется квадрат-заглушка.
 local Icons = {
-	aim = "", eye = "", activity = "", globe = "", box = "", folder = "", gear = "",
-	close = "", collapse = "", expand = "", search = "", chevron = "", check = "",
+	aim = "88918648209631", eye = "76094156507681", activity = "135655762470435", globe = "114592615951894", box = "89929881524185", folder = "117694049679058", gear = "96336462477123",
+	close = "115080195100680", collapse = "", expand = "83887475695658", search = "79895989290936", chevron = "73061240707002", check = "92375209004219",
 }
 
 --=========================== КОНСТАНТЫ РАСКЛАДКИ ======================
@@ -2151,19 +2151,5 @@ Chams:AddSlider({ Name = "Прозрачность", Min = 0, Max = 100, Default
 
 Win:SelectTab(Visuals)
 Win:SetWatermark(true)
-
-task.delay(2, function()
-	Win:Toggle(false)
-	task.wait(0.4)
-	local r = Win.LauncherRoot
-	print("allowed", Win._launcherAllowed,
-		"shown", Win._launcherShown,
-		"visible", r.Visible,
-		"alpha", r.GroupTransparency,
-		"pos", r.AbsolutePosition,
-		"size", r.AbsoluteSize,
-		"guiEnabled", r.Parent.Enabled,
-		"children", #r:GetChildren())
-end)
 
 return Library
